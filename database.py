@@ -54,10 +54,11 @@ def get_user_stats(telegram_id: int):
 "SELECT score, streak, max_streak FROM users WHERE telegram_id = ?", (telegram_id,)
         ).fetchone()
     
-def update_score(telegram_id: int, is_correct: bool):
+def update_score(telegram_id: int, is_correct: bool, username: str = "Player"):
+    ensure_user(telegram_id, username)
     stats = get_user_stats(telegram_id)
     if not stats:
-        return
+        return {"score": 0, "streak": 0, "max_streak": 0}
     
     score = stats["score"]
     streak = stats["streak"]

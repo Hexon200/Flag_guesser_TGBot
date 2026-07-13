@@ -850,7 +850,8 @@ async def handle_guess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         
     try:
         user_id = query.from_user.id
-        new_stats = database.update_score(user_id, is_correct)
+        username = query.from_user.username or query.from_user.first_name or "Player"
+        new_stats = database.update_score(user_id, is_correct, username)
     except Exception as e:
         logger.error(f"Database error in handle_guess: {e}")
         await query.message.reply_text("⚠️ There was an issue saving your score. Please try again.")
