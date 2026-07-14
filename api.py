@@ -10,10 +10,10 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, quote
 
 import jwt
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -28,6 +28,7 @@ JWT_ALGORITHM = "HS256"
 SESSION_HOURS = int(os.getenv("TMA_SESSION_HOURS", "6"))
 INIT_DATA_MAX_AGE_SECONDS = int(os.getenv("TMA_INIT_DATA_MAX_AGE_SECONDS", "86400"))
 DEV_AUTH_ENABLED = os.getenv("TMA_DEV_AUTH", "").lower() in {"1", "true", "yes"}
+TMA_PUBLIC_URL = os.getenv("TMA_PUBLIC_URL", "").rstrip("/")
 
 BASE_DIR = Path(__file__).parent
 TMA_DIR = BASE_DIR / "tma"
@@ -35,6 +36,8 @@ TMA_DIR = BASE_DIR / "tma"
 RATE_BUCKETS: dict[tuple[int, str], list[float]] = {}
 DUEL_CONNECTIONS: dict[str, dict[int, set[WebSocket]]] = {}
 DUEL_ROOMS: dict[str, dict] = {}
+DUEL_COUNTDOWN_SECONDS = 3
+DUEL_ROUND_SECONDS = 10
 
 
 class TelegramAuthRequest(BaseModel):
@@ -58,6 +61,11 @@ class ChallengeJoinRequest(BaseModel):
 
 
 class QuickMatchRequest(BaseModel):
+    format: str = "bo5"
+
+
+class RematchRequest(BaseModel):
+    duel_id: str | None = None
     format: str = "bo5"
 
 
@@ -129,6 +137,10 @@ def create_app() -> FastAPI:
             if previous:
                 return previous
             raise HTTPException(status_code=409, detail="Question already answered")
+        if (session.get("category") or "all") == "daily":
+            daily_count = database.get_daily_answer_count(telegram_id, date.today().isoformat())
+            if daily_count >= game_logic.DAILY_QUESTION_COUNT:
+                raise HTTPException(status_code=409, detail="Daily challenge already completed")
 
         if session["mode"] == "match":
             result = resolve_match_answer(session, payload)
@@ -173,16 +185,22 @@ def create_app() -> FastAPI:
             database.mark_question_answered(payload.question_id, telegram_id)
 
         new_badges = database.evaluate_badges(telegram_id)
+        daily_completed = False
+        if (session.get("category") or "all") == "daily":
+            daily_completed = database.get_daily_answer_count(telegram_id, date.today().isoformat()) >= game_logic.DAILY_QUESTION_COUNT
         response = {
             "correct": result["correct"],
             "completed": result.get("completed", False),
             "matched_card_ids": result.get("matched_card_ids", []),
             "correct_answer": result["correct_answer"],
+            "country_name": result.get("country_name"),
+            "selected_answer": result.get("selected_answer"),
             "stats": new_stats,
             "points_awarded": scoring["points"],
             "multiplier": scoring["multiplier"],
             "suspicious": suspicious,
             "new_badges": new_badges,
+            "daily_completed": daily_completed,
         }
         database.save_answer_receipt(receipt_key, telegram_id, payload.question_id, response)
         return response
@@ -190,6 +208,28 @@ def create_app() -> FastAPI:
     @app.get("/api/profile/stats")
     async def profile_stats(current_user: Annotated[dict, Depends(require_user)]):
         return database.get_profile_stats(int(current_user["id"]))
+
+    @app.get("/api/session/summary")
+    async def session_summary(current_user: Annotated[dict, Depends(require_user)], scope: str = "daily"):
+        if scope != "daily":
+            raise HTTPException(status_code=400, detail="Only daily summaries are available")
+        return database.get_daily_summary(
+            int(current_user["id"]),
+            date.today().isoformat(),
+            game_logic.DAILY_QUESTION_COUNT,
+        )
+
+    @app.get("/api/review/missed")
+    async def missed_review(current_user: Annotated[dict, Depends(require_user)]):
+        rows = database.get_recent_missed_flags(int(current_user["id"]), 8)
+        return {"items": [enrich_missed_row(row) for row in rows]}
+
+    @app.get("/api/country/{country_name}")
+    async def country_info(country_name: str, current_user: Annotated[dict, Depends(require_user)]):
+        country = find_country(country_name)
+        if not country:
+            raise HTTPException(status_code=404, detail="Country not found")
+        return public_country_info(country)
 
     @app.get("/api/leaderboard")
     async def leaderboard(current_user: Annotated[dict, Depends(require_user)], scope: str = "global"):
@@ -200,6 +240,15 @@ def create_app() -> FastAPI:
                 "you": [],
                 "scope": "daily",
             }
+        if scope == "weekly":
+            start_day, end_day = current_week_bounds()
+            return {
+                "leaders": database.get_weekly_leaderboard(start_day.isoformat(), end_day.isoformat(), 10),
+                "you": [],
+                "scope": "weekly",
+                "start_day": start_day.isoformat(),
+                "end_day": end_day.isoformat(),
+            }
         if scope != "global":
             raise HTTPException(status_code=400, detail="Unknown leaderboard scope")
         return {
@@ -209,13 +258,25 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/api/challenge/create")
-    async def create_challenge(current_user: Annotated[dict, Depends(require_user)], payload: ChallengeCreateRequest):
+    async def create_challenge(
+        request: Request,
+        current_user: Annotated[dict, Depends(require_user)],
+        payload: ChallengeCreateRequest,
+    ):
         telegram_id = int(current_user["id"])
         check_rate_limit(telegram_id, "challenge", limit=8, window_seconds=60)
         duel_id = uuid.uuid4().hex[:12]
         database.create_duel_session(duel_id, telegram_id)
         database.log_duel_event(duel_id, telegram_id, "created", {"format": payload.format, "mode": payload.mode})
-        return {"duel_id": duel_id, "mode": payload.mode, "format": payload.format, "status": "waiting"}
+        invite_url = build_tma_url(request, f"?duel={duel_id}&format={payload.format}")
+        return {
+            "duel_id": duel_id,
+            "mode": payload.mode,
+            "format": payload.format,
+            "status": "waiting",
+            "invite_url": invite_url,
+            "share_url": f"https://t.me/share/url?url={quote(invite_url, safe='')}&text=Join%20my%20Flag%20Atlas%20duel",
+        }
 
     @app.post("/api/challenge/join")
     async def join_challenge(current_user: Annotated[dict, Depends(require_user)], payload: ChallengeJoinRequest):
@@ -229,6 +290,26 @@ def create_app() -> FastAPI:
         database.join_duel_session(payload.duel_id, telegram_id)
         database.log_duel_event(payload.duel_id, telegram_id, "joined", {})
         return {"duel_id": payload.duel_id, "status": "ready"}
+
+    @app.post("/api/challenge/rematch")
+    async def rematch_challenge(
+        request: Request,
+        current_user: Annotated[dict, Depends(require_user)],
+        payload: RematchRequest,
+    ):
+        telegram_id = int(current_user["id"])
+        match_format = payload.format if payload.format in {"bo5", "bo10"} else "bo5"
+        duel_id = uuid.uuid4().hex[:12]
+        database.create_duel_session(duel_id, telegram_id)
+        database.log_duel_event(duel_id, telegram_id, "rematch_created", {"from_duel_id": payload.duel_id, "format": match_format})
+        invite_url = build_tma_url(request, f"?duel={duel_id}&format={match_format}")
+        return {
+            "duel_id": duel_id,
+            "format": match_format,
+            "status": "waiting",
+            "invite_url": invite_url,
+            "share_url": f"https://t.me/share/url?url={quote(invite_url, safe='')}&text=Join%20my%20Flag%20Atlas%20rematch",
+        }
 
     @app.post("/api/matchmaking/quick-match")
     async def quick_match(current_user: Annotated[dict, Depends(require_user)], payload: QuickMatchRequest):
@@ -361,10 +442,65 @@ def public_user(user: dict) -> dict:
     }
 
 
+def current_week_bounds() -> tuple[date, date]:
+    today = date.today()
+    start_day = today - timedelta(days=today.weekday())
+    return start_day, start_day + timedelta(days=6)
+
+
+def build_tma_url(request: Request, query: str) -> str:
+    base = TMA_PUBLIC_URL or str(request.base_url).rstrip("/")
+    invite_url = f"{base}/{query}" if not base.endswith("/") else f"{base}{query}"
+    return invite_url.replace("/?", "?")
+
+
+def find_country(name: str | None) -> dict | None:
+    if not name:
+        return None
+    normalized = name.strip().casefold()
+    return next((country for country in COUNTRIES if country["name"].casefold() == normalized), None)
+
+
+def similar_country_names(country_name: str) -> list[str]:
+    for group in game_logic.SIMILAR_FLAG_GROUPS:
+        if country_name in group:
+            return sorted(name for name in group if name != country_name)
+    return []
+
+
+def public_country_info(country: dict) -> dict:
+    return {
+        "name": country["name"],
+        "flag_url": country["flag_url"],
+        "continent": country["continent"],
+        "capital": country["capital"],
+        "similar": [
+            {
+                "name": similar["name"],
+                "flag_url": similar["flag_url"],
+                "capital": similar["capital"],
+                "continent": similar["continent"],
+            }
+            for name in similar_country_names(country["name"])
+            for similar in [find_country(name)]
+            if similar
+        ],
+    }
+
+
+def enrich_missed_row(row: dict) -> dict:
+    country = find_country(row.get("country_name") or row.get("correct_answer"))
+    if not country:
+        return row
+    return {**row, **public_country_info(country)}
+
+
 def create_grid_question(telegram_id: int, choices_count: int, category_key: str = "all", difficulty: str = "medium") -> dict:
     tier = game_logic.tier_for(difficulty)
     if category_key == "daily":
         answered = database.get_daily_answer_count(telegram_id, date.today().isoformat())
+        if answered >= game_logic.DAILY_QUESTION_COUNT:
+            return daily_complete_response(telegram_id)
         correct = game_logic.daily_country_for_index(answered)
         daily_progress = {"answered": min(answered, game_logic.DAILY_QUESTION_COUNT), "total": game_logic.DAILY_QUESTION_COUNT}
     else:
@@ -406,6 +542,19 @@ def create_grid_question(telegram_id: int, choices_count: int, category_key: str
     if daily_progress:
         question["daily_progress"] = daily_progress
     return question
+
+
+def daily_complete_response(telegram_id: int) -> dict:
+    return {
+        "mode": "grid",
+        "category": "daily",
+        "completed": True,
+        "daily_progress": {
+            "answered": game_logic.DAILY_QUESTION_COUNT,
+            "total": game_logic.DAILY_QUESTION_COUNT,
+        },
+        "leaderboard": database.get_daily_leaderboard(date.today().isoformat(), 10),
+    }
 
 
 def create_match_deck(telegram_id: int, category_key: str = "all", tier: game_logic.DifficultyTier | None = None) -> dict:
@@ -598,10 +747,15 @@ async def start_duel(duel_id: str, telegram_id: int, match_format: str):
         "players": players[:2],
         "scores": {str(player_id): 0 for player_id in players[:2]},
         "answered": set(),
+        "answers": {},
+        "resolving": False,
         "current": None,
     }
     DUEL_ROOMS[duel_id] = room
     database.log_duel_event(duel_id, telegram_id, "started", {"format": match_format, "players": players[:2]})
+    for second in range(DUEL_COUNTDOWN_SECONDS, 0, -1):
+        await broadcast_duel(duel_id, {"type": "duel_countdown", "seconds": second})
+        await asyncio.sleep(1)
     await next_duel_round(duel_id)
 
 
@@ -618,6 +772,8 @@ async def next_duel_round(duel_id: str):
         return
     room["round"] += 1
     room["answered"] = set()
+    room["answers"] = {}
+    room["resolving"] = False
     correct = random.choice(COUNTRIES)
     wrong = random.sample([country for country in COUNTRIES if country["name"] != correct["name"]], 5)
     countries = [correct] + wrong
@@ -627,9 +783,11 @@ async def next_duel_round(duel_id: str):
         "prompt": correct["name"],
         "correct_country": correct["name"],
         "choices": choices,
+        "deadline_ms": int((time.time() + DUEL_ROUND_SECONDS) * 1000),
     }
     database.log_duel_event(duel_id, 0, "round_started", {"round": room["round"], "correct_country": correct["name"]})
     await broadcast_duel(duel_id, public_duel_question(room))
+    asyncio.create_task(resolve_duel_round_after_timeout(duel_id, room["round"]))
 
 
 async def answer_duel_question(duel_id: str, telegram_id: int, choice_id: str | None):
@@ -641,9 +799,12 @@ async def answer_duel_question(duel_id: str, telegram_id: int, choice_id: str | 
         return
     selected = next((choice for choice in room["current"]["choices"] if choice["id"] == choice_id), None)
     is_correct = bool(selected and selected["country"] == room["current"]["correct_country"])
-    if is_correct:
-        room["scores"][str(telegram_id)] = int(room["scores"].get(str(telegram_id), 0)) + 1
     room["answered"].add(telegram_id)
+    room["answers"][str(telegram_id)] = {
+        "choice_id": choice_id,
+        "selected_country": selected["country"] if selected else None,
+        "correct": is_correct,
+    }
     database.log_duel_event(
         duel_id,
         telegram_id,
@@ -659,11 +820,8 @@ async def answer_duel_question(duel_id: str, telegram_id: int, choice_id: str | 
         duel_id,
         telegram_id,
         {
-            "type": "duel_answer_result",
+            "type": "duel_answer_received",
             "user_id": telegram_id,
-            "correct": is_correct,
-            "correct_answer": room["current"]["correct_country"],
-            "scores": room["scores"],
         },
     )
     await broadcast_duel(
@@ -676,20 +834,45 @@ async def answer_duel_question(duel_id: str, telegram_id: int, choice_id: str | 
         },
     )
     if len(room["answered"]) >= len(room["players"]):
-        await broadcast_duel(
-            duel_id,
-            {
-                "type": "duel_round_result",
-                "round": room["round"],
-                "correct_answer": room["current"]["correct_country"],
-                "scores": room["scores"],
-            },
-        )
-        await asyncio.sleep(1.1)
-        if room["round"] >= room["total"]:
-            await complete_duel(duel_id)
-        else:
-            await next_duel_round(duel_id)
+        await finish_duel_round(duel_id, room["round"])
+
+
+async def resolve_duel_round_after_timeout(duel_id: str, round_number: int):
+    await asyncio.sleep(DUEL_ROUND_SECONDS)
+    await finish_duel_round(duel_id, round_number)
+
+
+async def finish_duel_round(duel_id: str, round_number: int):
+    room = DUEL_ROOMS.get(duel_id)
+    if not room or room.get("round") != round_number or room.get("resolving"):
+        return
+    room["resolving"] = True
+    for player_id in room["players"]:
+        answer = room["answers"].get(str(player_id))
+        if answer and answer["correct"]:
+            room["scores"][str(player_id)] = int(room["scores"].get(str(player_id), 0)) + 1
+    await broadcast_duel(
+        duel_id,
+        {
+            "type": "duel_round_result",
+            "round": room["round"],
+            "correct_answer": room["current"]["correct_country"],
+            "correct_choice_id": next(
+                (choice["id"] for choice in room["current"]["choices"] if choice["country"] == room["current"]["correct_country"]),
+                None,
+            ),
+            "answers": room["answers"],
+            "scores": room["scores"],
+        },
+    )
+    await asyncio.sleep(1.6)
+    if room["round"] >= room["total"]:
+        await complete_duel(duel_id)
+    else:
+        for second in range(DUEL_COUNTDOWN_SECONDS, 0, -1):
+            await broadcast_duel(duel_id, {"type": "duel_countdown", "seconds": second})
+            await asyncio.sleep(1)
+        await next_duel_round(duel_id)
 
 
 async def complete_duel(duel_id: str):
@@ -703,6 +886,10 @@ async def complete_duel(duel_id: str):
         if ordered[0][1] != ordered[1][1]:
             winner_id = int(ordered[0][0])
     database.log_duel_event(duel_id, winner_id or 0, "completed", {"scores": scores, "winner_id": winner_id})
+    duel = database.get_duel_session(duel_id) or {}
+    creator_score = int(scores.get(str(duel.get("creator_id")), 0))
+    opponent_score = int(scores.get(str(duel.get("opponent_id")), 0))
+    database.complete_duel_session(duel_id, creator_score, opponent_score)
     await broadcast_duel(duel_id, {"type": "duel_complete", "scores": scores, "winner_id": winner_id})
     DUEL_ROOMS.pop(duel_id, None)
 
@@ -716,6 +903,8 @@ def public_duel_question(room: dict) -> dict:
         "prompt": {"type": "country_name", "text": current["prompt"]},
         "choices": [{"id": choice["id"], "flag_url": choice["flag_url"]} for choice in current["choices"]],
         "scores": room["scores"],
+        "timer_seconds": DUEL_ROUND_SECONDS,
+        "deadline_ms": current["deadline_ms"],
     }
 
 

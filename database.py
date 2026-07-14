@@ -466,6 +466,37 @@ def get_daily_leaderboard(day: str, limit: int = 10):
     with get_db_connection() as conn:
         rows = conn.execute(
             """
+            WITH first_daily_answers AS (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY telegram_id
+                           ORDER BY created_at ASC, id ASC
+                       ) AS daily_number
+                FROM quiz_answers_log
+                WHERE category = 'daily' AND DATE(created_at) = ?
+            ),
+            totals AS (
+                SELECT telegram_id, username,
+                       COALESCE(SUM(points_awarded), 0) AS score,
+                       COALESCE(SUM(is_correct), 0) AS correct_answers
+                FROM first_daily_answers
+                WHERE daily_number <= ?
+                GROUP BY telegram_id, username
+            )
+            SELECT telegram_id, username, score, correct_answers,
+                   RANK() OVER (ORDER BY score DESC, correct_answers DESC, telegram_id ASC) AS rank
+            FROM totals
+            ORDER BY score DESC, correct_answers DESC, telegram_id ASC
+            LIMIT ?
+            """,
+            (day, game_logic.DAILY_QUESTION_COUNT, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+def get_weekly_leaderboard(start_day: str, end_day: str, limit: int = 10):
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
             SELECT telegram_id, username,
                    COALESCE(SUM(points_awarded), 0) AS score,
                    COALESCE(SUM(is_correct), 0) AS correct_answers,
@@ -473,12 +504,115 @@ def get_daily_leaderboard(day: str, limit: int = 10):
                                          COALESCE(SUM(is_correct), 0) DESC,
                                          telegram_id ASC) AS rank
             FROM quiz_answers_log
-            WHERE category = 'daily' AND DATE(created_at) = ?
+            WHERE DATE(created_at) BETWEEN ? AND ?
+              AND is_suspicious = 0
             GROUP BY telegram_id, username
             ORDER BY score DESC, correct_answers DESC, telegram_id ASC
             LIMIT ?
             """,
-            (day, limit),
+            (start_day, end_day, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+def get_daily_summary(telegram_id: int, day: str, limit: int):
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
+            WITH first_daily_answers AS (
+                SELECT *,
+                       ROW_NUMBER() OVER (ORDER BY created_at ASC, id ASC) AS daily_number
+                FROM quiz_answers_log
+                WHERE telegram_id = ?
+                  AND category = 'daily'
+                  AND DATE(created_at) = ?
+            )
+            SELECT *
+            FROM first_daily_answers
+            WHERE daily_number <= ?
+            ORDER BY daily_number ASC
+            """,
+            (telegram_id, day, limit),
+        ).fetchall()
+        answers = [dict(row) for row in rows]
+        total = len(answers)
+        correct = sum(1 for row in answers if row["is_correct"])
+        points = sum(int(row["points_awarded"] or 0) for row in answers)
+        correct_times = [int(row["response_ms"]) for row in answers if row["is_correct"] and row["response_ms"]]
+        missed = [
+            {
+                "country_name": row["country_name"] or row["correct_answer"],
+                "correct_answer": row["correct_answer"],
+                "selected_answer": row["selected_answer"],
+                "continent": row["continent"],
+            }
+            for row in answers
+            if not row["is_correct"] and not row["is_suspicious"]
+        ]
+        rank = get_daily_user_rank(telegram_id, day, limit)
+        return {
+            "total": total,
+            "correct": correct,
+            "missed": len(missed),
+            "points": points,
+            "accuracy": round((correct / total) * 100) if total else 0,
+            "avg_correct_ms": round(sum(correct_times) / len(correct_times)) if correct_times else None,
+            "rank": rank,
+            "hardest_missed": missed[:5],
+        }
+
+def get_daily_user_rank(telegram_id: int, day: str, limit: int):
+    with get_db_connection() as conn:
+        row = conn.execute(
+            """
+            WITH first_daily_answers AS (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY telegram_id
+                           ORDER BY created_at ASC, id ASC
+                       ) AS daily_number
+                FROM quiz_answers_log
+                WHERE category = 'daily' AND DATE(created_at) = ?
+            ),
+            totals AS (
+                SELECT telegram_id, username,
+                       COALESCE(SUM(points_awarded), 0) AS score,
+                       COALESCE(SUM(is_correct), 0) AS correct_answers
+                FROM first_daily_answers
+                WHERE daily_number <= ?
+                GROUP BY telegram_id, username
+            ),
+            ranked AS (
+                SELECT telegram_id, score, correct_answers,
+                       RANK() OVER (ORDER BY score DESC, correct_answers DESC, telegram_id ASC) AS rank
+                FROM totals
+            )
+            SELECT rank, score, correct_answers
+            FROM ranked
+            WHERE telegram_id = ?
+            """,
+            (day, limit, telegram_id),
+        ).fetchone()
+        return dict(row) if row else None
+
+def get_recent_missed_flags(telegram_id: int, limit: int = 8):
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT country_name,
+                   continent,
+                   correct_answer,
+                   COUNT(*) AS misses,
+                   MAX(created_at) AS last_missed_at
+            FROM quiz_answers_log
+            WHERE telegram_id = ?
+              AND is_correct = 0
+              AND is_suspicious = 0
+              AND country_name IS NOT NULL
+            GROUP BY country_name, continent, correct_answer
+            ORDER BY misses DESC, last_missed_at DESC
+            LIMIT ?
+            """,
+            (telegram_id, limit),
         ).fetchall()
         return [dict(row) for row in rows]
 
@@ -606,6 +740,21 @@ def join_duel_session(duel_id: str, opponent_id: int):
             WHERE duel_id = ? AND opponent_id IS NULL
             """,
             (opponent_id, duel_id),
+        )
+        conn.commit()
+
+def complete_duel_session(duel_id: str, creator_score: int, opponent_score: int):
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            UPDATE duel_sessions
+            SET status = 'completed',
+                creator_score = ?,
+                opponent_score = ?,
+                completed_at = CURRENT_TIMESTAMP
+            WHERE duel_id = ?
+            """,
+            (creator_score, opponent_score, duel_id),
         )
         conn.commit()
 

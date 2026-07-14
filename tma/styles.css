@@ -420,6 +420,99 @@ h3 {
   color: var(--danger);
 }
 
+.country-card,
+.summary-panel {
+  margin-top: var(--space-16);
+  padding: var(--space-12);
+  border: 1px solid var(--neutral-200);
+  border-radius: var(--radius-8);
+  background: var(--paper-raised);
+  box-shadow: var(--shadow-press);
+}
+
+.country-card {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  gap: var(--space-12);
+  align-items: center;
+}
+
+.country-card h3 {
+  margin: 0 0 var(--space-6);
+}
+
+.country-card p {
+  margin: 0;
+  color: var(--ink-muted);
+}
+
+.country-card-flag {
+  width: 92px;
+  height: 64px;
+  object-fit: contain;
+}
+
+.similar-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+  margin-top: var(--space-8);
+}
+
+.similar-flags span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  font-size: var(--type-12);
+  font-weight: 800;
+}
+
+.similar-flags img {
+  width: 24px;
+  height: 16px;
+  object-fit: contain;
+}
+
+.summary-panel .stat-grid {
+  margin-top: var(--space-12);
+}
+
+.review-list {
+  display: grid;
+  gap: var(--space-8);
+  margin-top: var(--space-12);
+}
+
+.review-row {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: var(--space-10);
+  align-items: center;
+  min-height: 58px;
+  border: 1px solid var(--neutral-200);
+  border-radius: var(--radius-8);
+  background: color-mix(in srgb, var(--paper-raised) 82%, var(--paper));
+  color: var(--ink);
+  text-align: left;
+  padding: var(--space-8);
+}
+
+.review-row img {
+  width: 52px;
+  height: 34px;
+  object-fit: contain;
+}
+
+.review-row strong,
+.review-row small {
+  display: block;
+}
+
+.review-row small {
+  color: var(--ink-muted);
+  font-weight: 800;
+}
+
 .card {
   display: block;
   width: 100%;
@@ -629,6 +722,7 @@ h3 {
 
 .duel-actions {
   margin-top: var(--space-16);
+  flex-wrap: wrap;
 }
 
 .primary-action,
@@ -675,6 +769,55 @@ h3 {
   margin-top: var(--space-8);
   font-family: var(--font-display);
   font-size: var(--type-28);
+}
+
+.duel-countdown {
+  width: 76px;
+  height: 76px;
+  display: grid;
+  place-items: center;
+  margin: var(--space-16) auto;
+  border: 1px solid var(--neutral-200);
+  border-radius: 50%;
+  background: var(--route-primary);
+  color: var(--route-primary-text);
+  font-family: var(--font-display);
+  font-size: var(--type-40);
+  box-shadow: var(--shadow-lift);
+}
+
+.duel-timer {
+  width: fit-content;
+  min-width: 58px;
+  margin: var(--space-10) auto;
+  padding: var(--space-6) var(--space-10);
+  border: 1px solid var(--neutral-200);
+  border-radius: var(--radius-pill);
+  background: var(--paper-raised);
+  color: var(--route-secondary);
+  font-family: var(--font-display);
+  font-weight: 900;
+  text-align: center;
+}
+
+.daily-complete {
+  grid-column: 1 / -1;
+  display: grid;
+  place-items: center;
+  text-align: center;
+}
+
+.daily-complete strong {
+  display: block;
+  font-family: var(--font-display);
+  font-size: var(--type-40);
+}
+
+.daily-complete span {
+  display: block;
+  margin-top: var(--space-6);
+  color: var(--ink-muted);
+  font-weight: 800;
 }
 
 .toast-stack {

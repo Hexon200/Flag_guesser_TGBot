@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>Flag Atlas</title>
-    <link rel="stylesheet" href="/tma/design-tokens.css?v=2.1">
-    <link rel="stylesheet" href="/tma/styles.css?v=2.1">
+    <link rel="stylesheet" href="/tma/design-tokens.css?v=2.3">
+    <link rel="stylesheet" href="/tma/styles.css?v=2.3">
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
@@ -62,6 +62,18 @@
         </div>
         <div id="flag-grid" class="flag-grid"></div>
         <p id="grid-feedback" class="feedback" aria-live="polite"></p>
+        <div id="country-card" class="country-card" hidden></div>
+        <div id="session-summary" class="summary-panel" hidden>
+          <div class="prompt-row">
+            <div>
+              <p class="eyebrow">Session report</p>
+              <h2 id="summary-title">Summary</h2>
+            </div>
+            <button id="review-missed" class="primary-action compact-action" type="button">Learn missed</button>
+          </div>
+          <div id="summary-stats" class="stat-grid"></div>
+          <div id="missed-flags" class="review-list"></div>
+        </div>
       </section>
 
       <section id="daily-view" class="view" hidden>
@@ -103,12 +115,16 @@
         </div>
         <div class="duel-actions">
           <button id="quick-match" class="primary-action" type="button">Quick duel</button>
+          <button id="invite-duel" class="secondary-action" type="button">Invite</button>
           <button id="start-duel" class="primary-action" type="button" disabled>Start</button>
+          <button id="rematch-duel" class="secondary-action" type="button">Rematch</button>
           <button id="cancel-match" class="secondary-action" type="button">Cancel</button>
         </div>
         <div id="duel-round" class="duel-round" hidden>
           <p class="eyebrow" id="duel-round-label">Round 1/5</p>
           <h2 id="duel-prompt">Country</h2>
+          <div id="duel-countdown" class="duel-countdown" hidden>3</div>
+          <div id="duel-timer" class="duel-timer">10s</div>
           <div id="duel-grid" class="flag-grid duel-grid"></div>
         </div>
         <p id="duel-status" class="feedback">Queue for a live match, then use the room events for play or replay.</p>
@@ -145,6 +161,7 @@
           <div id="leaderboard-scope" class="segmented compact">
             <button data-scope="global" class="active" type="button">Global</button>
             <button data-scope="daily" type="button">Daily</button>
+            <button data-scope="weekly" type="button">Weekly</button>
           </div>
         </div>
         <div id="leaders" class="leader-list"></div>
@@ -155,6 +172,6 @@
 
     <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
     <canvas id="confetti-canvas" aria-hidden="true"></canvas>
-    <script type="module" src="/tma/app.js?v=2.1"></script>
+    <script type="module" src="/tma/app.js?v=2.3"></script>
   </body>
 </html>
