@@ -420,13 +420,6 @@ h3 {
   color: var(--danger);
 }
 
-.match-board {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--space-8);
-  margin-top: var(--space-16);
-}
-
 .card {
   display: block;
   width: 100%;
@@ -644,8 +637,44 @@ h3 {
   padding: 0 var(--space-12);
 }
 
+.compact-action {
+  flex: 0 0 auto;
+  min-width: 92px;
+}
+
 .secondary-action {
   color: var(--ink-muted);
+}
+
+.daily-panel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-8);
+  margin: var(--space-16) 0;
+}
+
+.daily-panel div {
+  min-height: 82px;
+  padding: var(--space-12);
+  border: 1px solid var(--neutral-200);
+  border-radius: var(--radius-8);
+  background: var(--paper-raised);
+  box-shadow: var(--shadow-press);
+}
+
+.daily-panel span {
+  display: block;
+  color: var(--ink-muted);
+  font-size: var(--type-12);
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.daily-panel strong {
+  display: block;
+  margin-top: var(--space-8);
+  font-family: var(--font-display);
+  font-size: var(--type-28);
 }
 
 .toast-stack {
@@ -813,7 +842,4 @@ h3 {
     grid-template-columns: 1fr;
   }
 
-  .match-board {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
 }

@@ -655,17 +655,36 @@ async def answer_duel_question(duel_id: str, telegram_id: int, choice_id: str | 
             "score": room["scores"].get(str(telegram_id), 0),
         },
     )
-    await broadcast_duel(
+    await send_to_duel_user(
         duel_id,
+        telegram_id,
         {
-            "type": "duel_answered",
+            "type": "duel_answer_result",
             "user_id": telegram_id,
             "correct": is_correct,
             "correct_answer": room["current"]["correct_country"],
             "scores": room["scores"],
         },
     )
+    await broadcast_duel(
+        duel_id,
+        {
+            "type": "duel_peer_answered",
+            "user_id": telegram_id,
+            "answered_count": len(room["answered"]),
+            "player_count": len(room["players"]),
+        },
+    )
     if len(room["answered"]) >= len(room["players"]):
+        await broadcast_duel(
+            duel_id,
+            {
+                "type": "duel_round_result",
+                "round": room["round"],
+                "correct_answer": room["current"]["correct_country"],
+                "scores": room["scores"],
+            },
+        )
         await asyncio.sleep(1.1)
         if room["round"] >= room["total"]:
             await complete_duel(duel_id)

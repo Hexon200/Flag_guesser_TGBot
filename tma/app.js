@@ -8,9 +8,6 @@ const state = {
   leaderboardScope: "global",
   gameOptions: null,
   gridQuestion: null,
-  matchQuestion: null,
-  flippedCards: [],
-  matchedCards: new Set(),
   timerId: null,
   timerTotal: 15,
   timerDeadline: 0,
@@ -39,9 +36,10 @@ const els = {
   timerProgress: document.getElementById("timer-progress"),
   timerText: document.getElementById("timer-text"),
   multiplier: document.getElementById("multiplier"),
-  matchBoard: document.getElementById("match-board"),
-  matchFeedback: document.getElementById("match-feedback"),
-  matchNew: document.getElementById("match-new"),
+  dailyStart: document.getElementById("daily-start"),
+  dailyTotal: document.getElementById("daily-total"),
+  dailyLeaders: document.getElementById("daily-leaders"),
+  dailyFeedback: document.getElementById("daily-feedback"),
   duelFormat: document.getElementById("duel-format"),
   quickMatch: document.getElementById("quick-match"),
   startDuel: document.getElementById("start-duel"),
@@ -104,7 +102,7 @@ function bindEvents() {
     tab.addEventListener("click", () => showView(tab.dataset.view));
   });
   els.gridNext.addEventListener("click", loadGridQuestion);
-  els.matchNew.addEventListener("click", loadMatchDeck);
+  els.dailyStart.addEventListener("click", startDailyChallenge);
   els.categorySelect.addEventListener("change", () => {
     state.category = els.categorySelect.value;
     loadGridQuestion();
@@ -157,6 +155,7 @@ function renderGameControls() {
     els.categorySelect.appendChild(option);
   });
   els.categorySelect.value = state.category;
+  els.dailyTotal.textContent = state.gameOptions.daily_total || 12;
 }
 
 async function showView(view) {
@@ -168,7 +167,7 @@ async function showView(view) {
     section.classList.toggle("active", !section.hidden);
   });
   if (view !== "grid") stopTimer();
-  if (view === "match" && !state.matchQuestion) await loadMatchDeck();
+  if (view === "daily") await loadDaily();
   if (view === "profile") await loadProfile();
   if (view === "leaderboard") await loadLeaderboard();
 }
@@ -275,88 +274,22 @@ function applyAnswerResult(result, button, feedbackEl) {
   (result.new_badges || []).forEach(showBadgeToast);
 }
 
-async function loadMatchDeck() {
-  clearFeedback(els.matchFeedback);
-  state.flippedCards = [];
-  state.matchedCards = new Set();
-  els.matchBoard.innerHTML = skeletonCards(8);
+async function loadDaily() {
+  els.dailyLeaders.innerHTML = skeletonRows(4);
   try {
-    const params = new URLSearchParams({
-      mode: "match",
-      difficulty: state.difficulty,
-      category: state.category === "capitals" || state.category === "daily" ? "all" : state.category,
-    });
-    const deck = await api(`/api/quiz/question?${params}`);
-    state.matchQuestion = deck;
-    els.matchBoard.innerHTML = "";
-    deck.cards.forEach((card, index) => els.matchBoard.appendChild(renderCard(card, index)));
+    const data = await api("/api/leaderboard?scope=daily");
+    renderLeaderList(els.dailyLeaders, data.leaders || [], false);
   } catch (error) {
-    renderError(els.matchBoard, error.message || "Could not load a matching deck.");
+    renderError(els.dailyLeaders, error.message || "Could not load daily leaderboard.");
   }
 }
 
-function renderCard(card, index) {
-  const button = document.createElement("button");
-  button.className = "card";
-  button.type = "button";
-  button.dataset.cardId = card.id;
-  button.style.setProperty("--i", index);
-  button.innerHTML = `
-    <span class="card-inner">
-      <span class="card-face card-front">${card.kind === "flag" ? `<img alt="Flag card" src="${escapeAttr(card.flag_url)}">` : escapeHtml(card.label)}</span>
-    </span>
-  `;
-  button.addEventListener("click", () => flipCard(button));
-  return button;
-}
-
-async function flipCard(cardEl) {
-  if (cardEl.classList.contains("matched") || cardEl.classList.contains("flipped")) return;
-  if (state.flippedCards.length >= 2) return;
-  cardEl.classList.add("flipped");
-  lightFeedback();
-  state.flippedCards.push(cardEl);
-  if (state.flippedCards.length !== 2) return;
-
-  const cardIds = state.flippedCards.map((el) => el.dataset.cardId);
-  try {
-    const result = await api("/api/quiz/answer", {
-      method: "POST",
-      body: JSON.stringify({
-        question_id: state.matchQuestion.question_id,
-        card_ids: cardIds,
-        idempotency_key: randomKey(),
-      }),
-    });
-    els.scoreValue.textContent = result.stats.score;
-    els.multiplier.textContent = `x${Number(result.multiplier || 1).toFixed(1)}`;
-
-    if (result.correct && !result.suspicious) {
-      state.flippedCards.forEach((el) => {
-        el.classList.add("matched");
-        state.matchedCards.add(el.dataset.cardId);
-      });
-      feedback(els.matchFeedback, `Matched +${result.points_awarded}`, true);
-      successFeedback();
-      if (state.matchedCards.size === state.matchQuestion.cards.length) {
-        burstConfetti();
-        window.setTimeout(loadMatchDeck, 1000);
-      }
-    } else {
-      feedback(els.matchFeedback, result.suspicious ? "Too fast to count." : "Try another pair", false);
-      errorFeedback();
-      window.setTimeout(() => {
-        state.flippedCards.forEach((el) => el.classList.remove("flipped"));
-      }, 650);
-    }
-    (result.new_badges || []).forEach(showBadgeToast);
-  } catch (error) {
-    feedback(els.matchFeedback, error.message || "Match was not saved.", false);
-    state.flippedCards.forEach((el) => el.classList.remove("flipped"));
-  }
-  window.setTimeout(() => {
-    state.flippedCards = [];
-  }, 700);
+async function startDailyChallenge() {
+  state.category = "daily";
+  els.categorySelect.value = "daily";
+  feedback(els.dailyFeedback, "Daily route loaded in Quiz.", true);
+  await showView("grid");
+  await loadGridQuestion();
 }
 
 async function joinQuickMatch() {
@@ -433,7 +366,7 @@ function connectDuel(duelId) {
     if (data.type === "duel_question") {
       renderDuelQuestion(data);
     }
-    if (data.type === "duel_answered") {
+    if (data.type === "duel_answer_result") {
       renderDuelScores(data.scores);
       if (Number(data.user_id) === Number(state.user?.id) && state.duelSelectedButton) {
         state.duelSelectedButton.classList.remove("pending");
@@ -444,6 +377,13 @@ function connectDuel(duelId) {
         data.correct ? `Answered correctly: ${data.correct_answer}` : `Answer in: ${data.correct_answer}`,
         data.correct,
       );
+    }
+    if (data.type === "duel_peer_answered" && Number(data.user_id) !== Number(state.user?.id)) {
+      feedback(els.duelStatus, `Opponent answered. Waiting for round result (${data.answered_count}/${data.player_count}).`, true);
+    }
+    if (data.type === "duel_round_result") {
+      renderDuelScores(data.scores);
+      feedback(els.duelStatus, `Round answer: ${data.correct_answer}`, true);
     }
     if (data.type === "duel_complete") {
       renderDuelScores(data.scores);
@@ -493,7 +433,7 @@ function renderDuelQuestion(question) {
     button.addEventListener("click", () => answerDuel(choice.id, button));
     els.duelGrid.appendChild(button);
   });
-  feedback(els.duelStatus, "Pick the matching flag before your opponent.", true);
+  feedback(els.duelStatus, "Pick the correct flag before your opponent.", true);
 }
 
 function answerDuel(choiceId, button) {
@@ -730,7 +670,7 @@ function skeletonRows(count) {
 }
 
 function titleFor(view) {
-  return { grid: "Quiz", match: "Match", duel: "Duel", profile: "Profile", leaderboard: "Ranks" }[view] || "Flag Atlas";
+  return { grid: "Quiz", daily: "Daily", duel: "Duel", profile: "Profile", leaderboard: "Ranks" }[view] || "Flag Atlas";
 }
 
 function labelForCategory(key) {

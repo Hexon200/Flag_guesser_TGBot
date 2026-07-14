@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>Flag Atlas</title>
-    <link rel="stylesheet" href="/tma/design-tokens.css?v=2.0">
-    <link rel="stylesheet" href="/tma/styles.css?v=2.0">
+    <link rel="stylesheet" href="/tma/design-tokens.css?v=2.1">
+    <link rel="stylesheet" href="/tma/styles.css?v=2.1">
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
@@ -23,7 +23,7 @@
 
       <nav class="tabs" aria-label="Game sections">
         <button class="tab active" data-view="grid" type="button">Quiz</button>
-        <button class="tab" data-view="match" type="button">Match</button>
+        <button class="tab" data-view="daily" type="button">Daily</button>
         <button class="tab" data-view="duel" type="button">Duel</button>
         <button class="tab" data-view="profile" type="button">Profile</button>
         <button class="tab" data-view="leaderboard" type="button">Ranks</button>
@@ -64,16 +64,26 @@
         <p id="grid-feedback" class="feedback" aria-live="polite"></p>
       </section>
 
-      <section id="match-view" class="view" hidden>
+      <section id="daily-view" class="view" hidden>
         <div class="prompt-row">
           <div>
-            <p class="eyebrow">Memory mode</p>
-            <h2>Pair flags with names</h2>
+            <p class="eyebrow">Same route for everyone</p>
+            <h2>Daily challenge</h2>
           </div>
-          <button id="match-new" class="icon-button" type="button" title="New deck" aria-label="New deck">R</button>
+          <button id="daily-start" class="primary-action compact-action" type="button">Start</button>
         </div>
-        <div id="match-board" class="match-board"></div>
-        <p id="match-feedback" class="feedback" aria-live="polite"></p>
+        <div class="daily-panel">
+          <div>
+            <span>Questions</span>
+            <strong id="daily-total">12</strong>
+          </div>
+          <div>
+            <span>Leaderboard</span>
+            <strong>Today</strong>
+          </div>
+        </div>
+        <div id="daily-leaders" class="leader-list"></div>
+        <p id="daily-feedback" class="feedback" aria-live="polite">One fixed set per day. Score once, climb the daily board.</p>
       </section>
 
       <section id="duel-view" class="view" hidden>
@@ -92,7 +102,7 @@
           <div><span>Opponent</span><strong id="duel-them">0</strong></div>
         </div>
         <div class="duel-actions">
-          <button id="quick-match" class="primary-action" type="button">Quick match</button>
+          <button id="quick-match" class="primary-action" type="button">Quick duel</button>
           <button id="start-duel" class="primary-action" type="button" disabled>Start</button>
           <button id="cancel-match" class="secondary-action" type="button">Cancel</button>
         </div>
@@ -145,6 +155,6 @@
 
     <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
     <canvas id="confetti-canvas" aria-hidden="true"></canvas>
-    <script type="module" src="/tma/app.js?v=2.0"></script>
+    <script type="module" src="/tma/app.js?v=2.1"></script>
   </body>
 </html>
