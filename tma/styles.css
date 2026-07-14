@@ -244,6 +244,7 @@ h3 {
 .card {
   aspect-ratio: 1 / 1.18;
   perspective: 800px;
+  -webkit-perspective: 800px;
   border: 0;
   padding: 0;
   background: transparent;
@@ -254,12 +255,14 @@ h3 {
   width: 100%;
   height: 100%;
   transform-style: preserve-3d;
-  transition: transform 0.24s ease;
+  -webkit-transform-style: preserve-3d;
+  transition: transform 0.24s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .card.flipped .card-inner,
 .card.matched .card-inner {
   transform: rotateY(180deg);
+  -webkit-transform: rotateY(180deg);
 }
 
 .card-face {
@@ -268,21 +271,28 @@ h3 {
   display: grid;
   place-items: center;
   backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
   border: 1px solid color-mix(in srgb, var(--muted) 22%, transparent);
   border-radius: 8px;
   background: color-mix(in srgb, var(--accent) 22%, var(--surface));
   overflow: hidden;
   padding: 8px;
+  transform: translate3d(0, 0, 0);
+  -webkit-transform: translate3d(0, 0, 0);
 }
 
 .card-front {
   color: var(--accent);
   font-weight: 900;
   font-size: 24px;
+  z-index: 2;
+  transform: translateZ(1px);
+  -webkit-transform: translateZ(1px);
 }
 
 .card-back {
-  transform: rotateY(180deg);
+  transform: rotateY(180deg) translateZ(1px);
+  -webkit-transform: rotateY(180deg) translateZ(1px);
   background: var(--surface);
   color: var(--text);
   font-size: 13px;
