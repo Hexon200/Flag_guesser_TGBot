@@ -3,30 +3,47 @@ const state = {
   token: "",
   user: null,
   view: "grid",
+  difficulty: "medium",
+  category: "all",
+  leaderboardScope: "global",
+  gameOptions: null,
   gridQuestion: null,
   matchQuestion: null,
   flippedCards: [],
   matchedCards: new Set(),
   timerId: null,
   timerTotal: 15,
+  timerDeadline: 0,
+  matchPollId: null,
 };
 
 const els = {
+  shell: document.getElementById("app-shell"),
   authPanel: document.getElementById("auth-panel"),
   screenTitle: document.getElementById("screen-title"),
   scoreValue: document.getElementById("score-value"),
   tabs: document.querySelectorAll(".tab"),
   views: document.querySelectorAll(".view"),
+  difficultyControls: document.getElementById("difficulty-controls"),
+  categorySelect: document.getElementById("category-select"),
+  gridKicker: document.getElementById("grid-kicker"),
   gridPrompt: document.getElementById("grid-prompt"),
+  promptFlag: document.getElementById("prompt-flag"),
   flagGrid: document.getElementById("flag-grid"),
   gridFeedback: document.getElementById("grid-feedback"),
   gridNext: document.getElementById("grid-next"),
-  timerRing: document.getElementById("timer-ring"),
+  timerProgress: document.getElementById("timer-progress"),
   timerText: document.getElementById("timer-text"),
+  multiplier: document.getElementById("multiplier"),
   matchBoard: document.getElementById("match-board"),
   matchFeedback: document.getElementById("match-feedback"),
   matchNew: document.getElementById("match-new"),
+  duelFormat: document.getElementById("duel-format"),
+  quickMatch: document.getElementById("quick-match"),
+  cancelMatch: document.getElementById("cancel-match"),
+  duelStatus: document.getElementById("duel-status"),
   profileName: document.getElementById("profile-name"),
+  profileAvatar: document.getElementById("profile-avatar"),
   totalAnswers: document.getElementById("total-answers"),
   accuracy: document.getElementById("accuracy"),
   avgTime: document.getElementById("avg-time"),
@@ -36,6 +53,8 @@ const els = {
   badges: document.getElementById("badges"),
   leaders: document.getElementById("leaders"),
   rankWindow: document.getElementById("rank-window"),
+  leaderboardScope: document.getElementById("leaderboard-scope"),
+  toastStack: document.getElementById("toast-stack"),
   confetti: document.getElementById("confetti-canvas"),
 };
 
@@ -46,13 +65,22 @@ async function boot() {
   tg?.expand();
   applyTelegramTheme();
   bindEvents();
-  await authenticate();
-  els.authPanel.hidden = true;
-  showView("grid");
-  await loadGridQuestion();
+  try {
+    await authenticate();
+    els.authPanel.hidden = true;
+    state.gameOptions = await api("/api/game/options");
+    renderGameControls();
+    showView("grid");
+    await loadGridQuestion();
+  } catch (error) {
+    renderError(els.authPanel, error.message || "Could not open the game session.");
+  }
 }
 
 function applyTelegramTheme() {
+  if (tg?.viewportHeight) {
+    document.documentElement.style.setProperty("--tg-viewport-height", `${tg.viewportHeight}px`);
+  }
   if (!tg?.themeParams) return;
   const root = document.documentElement;
   Object.entries(tg.themeParams).forEach(([key, value]) => {
@@ -62,12 +90,25 @@ function applyTelegramTheme() {
 
 function bindEvents() {
   els.tabs.forEach((tab) => {
-    tab.addEventListener("click", async () => {
-      await showView(tab.dataset.view);
-    });
+    tab.addEventListener("click", () => showView(tab.dataset.view));
   });
   els.gridNext.addEventListener("click", loadGridQuestion);
   els.matchNew.addEventListener("click", loadMatchDeck);
+  els.categorySelect.addEventListener("change", () => {
+    state.category = els.categorySelect.value;
+    loadGridQuestion();
+  });
+  els.quickMatch.addEventListener("click", joinQuickMatch);
+  els.cancelMatch.addEventListener("click", cancelQuickMatch);
+  els.leaderboardScope.querySelectorAll("button").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.leaderboardScope = button.dataset.scope;
+      els.leaderboardScope.querySelectorAll("button").forEach((item) => {
+        item.classList.toggle("active", item === button);
+      });
+      loadLeaderboard();
+    });
+  });
 }
 
 async function authenticate() {
@@ -81,6 +122,31 @@ async function authenticate() {
   state.user = result.user;
 }
 
+function renderGameControls() {
+  els.difficultyControls.innerHTML = "";
+  state.gameOptions.difficulties.forEach((tier) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = tier.label;
+    button.classList.toggle("active", tier.key === state.difficulty);
+    button.addEventListener("click", () => {
+      state.difficulty = tier.key;
+      els.difficultyControls.querySelectorAll("button").forEach((node) => node.classList.toggle("active", node === button));
+      loadGridQuestion();
+    });
+    els.difficultyControls.appendChild(button);
+  });
+
+  els.categorySelect.innerHTML = "";
+  state.gameOptions.categories.forEach((pack) => {
+    const option = document.createElement("option");
+    option.value = pack.key;
+    option.textContent = pack.label;
+    els.categorySelect.appendChild(option);
+  });
+  els.categorySelect.value = state.category;
+}
+
 async function showView(view) {
   state.view = view;
   els.screenTitle.textContent = titleFor(view);
@@ -89,6 +155,7 @@ async function showView(view) {
     section.hidden = section.id !== `${view}-view`;
     section.classList.toggle("active", !section.hidden);
   });
+  if (view !== "grid") stopTimer();
   if (view === "match" && !state.matchQuestion) await loadMatchDeck();
   if (view === "profile") await loadProfile();
   if (view === "leaderboard") await loadLeaderboard();
@@ -97,58 +164,131 @@ async function showView(view) {
 async function loadGridQuestion() {
   stopTimer();
   clearFeedback(els.gridFeedback);
+  els.flagGrid.innerHTML = skeletonChoices(6);
+  els.promptFlag.hidden = true;
+  try {
+    const params = new URLSearchParams({
+      mode: "grid",
+      difficulty: state.difficulty,
+      category: state.category,
+    });
+    const question = await api(`/api/quiz/question?${params}`);
+    state.gridQuestion = question;
+    state.timerTotal = question.timer_seconds || 15;
+    renderPrompt(question);
+    renderGridChoices(question);
+    startTimer();
+  } catch (error) {
+    renderError(els.flagGrid, error.message || "Could not load a question.");
+  }
+}
+
+function renderPrompt(question) {
+  const prompt = question.prompt || {};
+  const categoryLabel = labelForCategory(question.category);
+  if (prompt.type === "flag_to_capital") {
+    els.gridKicker.textContent = `${categoryLabel} / capital cities`;
+    els.gridPrompt.textContent = prompt.text;
+    els.promptFlag.innerHTML = `<img alt="Flag of ${escapeAttr(prompt.country)}" src="${escapeAttr(prompt.flag_url)}">`;
+    els.promptFlag.hidden = false;
+  } else {
+    els.gridKicker.textContent = categoryLabel;
+    els.gridPrompt.textContent = prompt.text || "Find the flag";
+    els.promptFlag.hidden = true;
+  }
+  if (question.daily_progress) {
+    const { answered, total } = question.daily_progress;
+    els.gridKicker.textContent = `Daily challenge ${Math.min(answered + 1, total)}/${total}`;
+  }
+}
+
+function renderGridChoices(question) {
   els.flagGrid.innerHTML = "";
-  const question = await api("/api/quiz/question?mode=grid&choices_count=6");
-  state.gridQuestion = question;
-  els.gridPrompt.textContent = question.prompt.text;
-  question.choices.forEach((choice) => {
+  question.choices.forEach((choice, index) => {
     const button = document.createElement("button");
     button.className = "flag-choice";
     button.type = "button";
     button.dataset.choiceId = choice.id;
-    button.innerHTML = `<img alt="Flag option" src="${escapeAttr(choice.flag_url)}">`;
+    button.style.setProperty("--i", index);
+    if (choice.flag_url) {
+      button.innerHTML = `<img alt="Flag option" src="${escapeAttr(choice.flag_url)}">`;
+    } else {
+      button.innerHTML = `<span class="choice-label">${escapeHtml(choice.label)}</span>`;
+    }
     button.addEventListener("click", () => answerGrid(choice.id, button));
     els.flagGrid.appendChild(button);
   });
-  startTimer();
 }
 
 async function answerGrid(choiceId, button) {
   stopTimer();
   disableGrid(true);
-  const result = await api("/api/quiz/answer", {
-    method: "POST",
-    body: JSON.stringify({ question_id: state.gridQuestion.question_id, choice_id: choiceId }),
-  });
+  const idempotencyKey = randomKey();
+  try {
+    const result = await api("/api/quiz/answer", {
+      method: "POST",
+      body: JSON.stringify({
+        question_id: state.gridQuestion.question_id,
+        choice_id: choiceId,
+        idempotency_key: idempotencyKey,
+      }),
+    });
+    applyAnswerResult(result, button, els.gridFeedback);
+    window.setTimeout(loadGridQuestion, result.suspicious ? 1600 : 1150);
+  } catch (error) {
+    feedback(els.gridFeedback, error.message || "Answer was not saved.", false);
+    disableGrid(false);
+  }
+}
+
+function applyAnswerResult(result, button, feedbackEl) {
   els.scoreValue.textContent = result.stats.score;
-  if (result.correct) {
-    button.classList.add("correct");
-    feedback(els.gridFeedback, `Correct: ${result.correct_answer}`, true);
+  els.multiplier.textContent = `x${Number(result.multiplier || 1).toFixed(1)}`;
+  if (result.correct && !result.suspicious) {
+    button?.classList.add("correct");
+    feedback(feedbackEl, `Correct: ${result.correct_answer} +${result.points_awarded}`, true);
     successFeedback();
     burstConfetti();
+  } else if (result.suspicious) {
+    button?.classList.add("wrong");
+    feedback(feedbackEl, "Too fast to count. Try again at human speed.", false);
+    errorFeedback();
   } else {
-    button.classList.add("wrong");
-    feedback(els.gridFeedback, `Missed: ${result.correct_answer}`, false);
+    button?.classList.add("wrong");
+    els.shell.classList.add("shake");
+    window.setTimeout(() => els.shell.classList.remove("shake"), 240);
+    feedback(feedbackEl, `Missed: ${result.correct_answer}`, false);
     errorFeedback();
   }
-  window.setTimeout(loadGridQuestion, 1100);
+  (result.new_badges || []).forEach(showBadgeToast);
 }
 
 async function loadMatchDeck() {
   clearFeedback(els.matchFeedback);
   state.flippedCards = [];
   state.matchedCards = new Set();
-  els.matchBoard.innerHTML = "";
-  const deck = await api("/api/quiz/question?mode=match");
-  state.matchQuestion = deck;
-  deck.cards.forEach((card) => els.matchBoard.appendChild(renderCard(card)));
+  els.matchBoard.innerHTML = skeletonCards(8);
+  try {
+    const params = new URLSearchParams({
+      mode: "match",
+      difficulty: state.difficulty,
+      category: state.category === "capitals" || state.category === "daily" ? "all" : state.category,
+    });
+    const deck = await api(`/api/quiz/question?${params}`);
+    state.matchQuestion = deck;
+    els.matchBoard.innerHTML = "";
+    deck.cards.forEach((card, index) => els.matchBoard.appendChild(renderCard(card, index)));
+  } catch (error) {
+    renderError(els.matchBoard, error.message || "Could not load a matching deck.");
+  }
 }
 
-function renderCard(card) {
+function renderCard(card, index) {
   const button = document.createElement("button");
   button.className = "card";
   button.type = "button";
   button.dataset.cardId = card.id;
+  button.style.setProperty("--i", index);
   button.innerHTML = `
     <span class="card-inner">
       <span class="card-face card-front">?</span>
@@ -168,79 +308,180 @@ async function flipCard(cardEl) {
   if (state.flippedCards.length !== 2) return;
 
   const cardIds = state.flippedCards.map((el) => el.dataset.cardId);
-  const result = await api("/api/quiz/answer", {
-    method: "POST",
-    body: JSON.stringify({ question_id: state.matchQuestion.question_id, card_ids: cardIds }),
-  });
-  els.scoreValue.textContent = result.stats.score;
-
-  if (result.correct) {
-    state.flippedCards.forEach((el) => {
-      el.classList.add("matched");
-      state.matchedCards.add(el.dataset.cardId);
+  try {
+    const result = await api("/api/quiz/answer", {
+      method: "POST",
+      body: JSON.stringify({
+        question_id: state.matchQuestion.question_id,
+        card_ids: cardIds,
+        idempotency_key: randomKey(),
+      }),
     });
-    feedback(els.matchFeedback, "Matched", true);
-    successFeedback();
-    if (state.matchedCards.size === state.matchQuestion.cards.length) {
-      burstConfetti();
-      window.setTimeout(loadMatchDeck, 1000);
+    els.scoreValue.textContent = result.stats.score;
+    els.multiplier.textContent = `x${Number(result.multiplier || 1).toFixed(1)}`;
+
+    if (result.correct && !result.suspicious) {
+      state.flippedCards.forEach((el) => {
+        el.classList.add("matched");
+        state.matchedCards.add(el.dataset.cardId);
+      });
+      feedback(els.matchFeedback, `Matched +${result.points_awarded}`, true);
+      successFeedback();
+      if (state.matchedCards.size === state.matchQuestion.cards.length) {
+        burstConfetti();
+        window.setTimeout(loadMatchDeck, 1000);
+      }
+    } else {
+      feedback(els.matchFeedback, result.suspicious ? "Too fast to count." : "Try another pair", false);
+      errorFeedback();
+      window.setTimeout(() => {
+        state.flippedCards.forEach((el) => el.classList.remove("flipped"));
+      }, 650);
     }
-  } else {
-    feedback(els.matchFeedback, "Try another pair", false);
-    errorFeedback();
-    window.setTimeout(() => {
-      state.flippedCards.forEach((el) => el.classList.remove("flipped"));
-    }, 650);
+    (result.new_badges || []).forEach(showBadgeToast);
+  } catch (error) {
+    feedback(els.matchFeedback, error.message || "Match was not saved.", false);
+    state.flippedCards.forEach((el) => el.classList.remove("flipped"));
   }
   window.setTimeout(() => {
     state.flippedCards = [];
   }, 700);
 }
 
-async function loadProfile() {
-  const stats = await api("/api/profile/stats");
-  const user = stats.user || {};
-  const answers = stats.answers || {};
-  const total = Number(answers.total_answers || 0);
-  const correct = Number(answers.correct_answers || 0);
-  const missed = Math.max(0, total - correct);
-  const accuracy = total ? Math.round((correct / total) * 100) : 0;
-  els.profileName.textContent = user.username || state.user?.first_name || "Profile";
-  els.totalAnswers.textContent = total;
-  els.accuracy.textContent = `${accuracy}%`;
-  els.avgTime.textContent = answers.avg_correct_ms ? `${(answers.avg_correct_ms / 1000).toFixed(1)}s` : "-";
-  els.bestStreak.textContent = user.max_streak || 0;
-  els.correctBar.style.height = `${Math.max(8, correct ? (correct / Math.max(total, 1)) * 100 : 8)}%`;
-  els.missedBar.style.height = `${Math.max(8, missed ? (missed / Math.max(total, 1)) * 100 : 8)}%`;
-  els.badges.innerHTML = "";
-  const badges = stats.badges || [];
-  if (!badges.length) {
-    els.badges.innerHTML = '<span class="badge">No badges yet</span>';
-  } else {
-    badges.forEach((badge) => {
-      const node = document.createElement("span");
-      node.className = "badge";
-      node.textContent = badge.name;
-      els.badges.appendChild(node);
+async function joinQuickMatch() {
+  feedback(els.duelStatus, "Searching for an opponent...", true);
+  try {
+    const result = await api("/api/matchmaking/quick-match", {
+      method: "POST",
+      body: JSON.stringify({ format: els.duelFormat.value }),
     });
+    if (result.status === "ready") {
+      feedback(els.duelStatus, `Duel ready: ${result.duel_id}`, true);
+      connectDuel(result.duel_id);
+    } else {
+      feedback(els.duelStatus, "Waiting in queue. Keep this screen open.", true);
+      startMatchPolling();
+    }
+  } catch (error) {
+    feedback(els.duelStatus, error.message || "Could not join matchmaking.", false);
   }
+}
+
+async function cancelQuickMatch() {
+  try {
+    await api("/api/matchmaking/quick-match", { method: "DELETE" });
+    stopMatchPolling();
+    feedback(els.duelStatus, "Queue cancelled.", true);
+  } catch (error) {
+    feedback(els.duelStatus, error.message || "Could not cancel queue.", false);
+  }
+}
+
+function startMatchPolling() {
+  stopMatchPolling();
+  state.matchPollId = window.setInterval(async () => {
+    try {
+      const result = await api("/api/matchmaking/status");
+      if (result.duel_id) {
+        stopMatchPolling();
+        feedback(els.duelStatus, `Duel ready: ${result.duel_id}`, true);
+        connectDuel(result.duel_id);
+      }
+    } catch (error) {
+      stopMatchPolling();
+      feedback(els.duelStatus, error.message || "Matchmaking status failed.", false);
+    }
+  }, 2000);
+}
+
+function stopMatchPolling() {
+  if (state.matchPollId) window.clearInterval(state.matchPollId);
+  state.matchPollId = null;
+}
+
+function connectDuel(duelId) {
+  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+  const socket = new WebSocket(`${protocol}://${window.location.host}/ws/duel/${duelId}`);
+  socket.addEventListener("open", () => {
+    socket.send(JSON.stringify({ type: "ready", at: Date.now() }));
+  });
+  socket.addEventListener("message", (event) => {
+    const data = JSON.parse(event.data);
+    if (data.type === "presence") {
+      feedback(els.duelStatus, `Duel room live: ${data.players} connected.`, true);
+    }
+  });
+}
+
+async function loadProfile() {
+  renderProfileSkeleton();
+  try {
+    const stats = await api("/api/profile/stats");
+    const user = stats.user || {};
+    const answers = stats.answers || {};
+    const total = Number(answers.total_answers || 0);
+    const correct = Number(answers.correct_answers || 0);
+    const missed = Math.max(0, total - correct);
+    const accuracy = total ? Math.round((correct / total) * 100) : 0;
+    const name = user.username || state.user?.first_name || "Profile";
+    els.profileName.textContent = name;
+    els.profileAvatar.textContent = initials(name);
+    els.totalAnswers.textContent = total;
+    els.accuracy.textContent = `${accuracy}%`;
+    els.avgTime.textContent = answers.avg_correct_ms ? `${(answers.avg_correct_ms / 1000).toFixed(1)}s` : "-";
+    els.bestStreak.textContent = user.max_streak || 0;
+    els.correctBar.style.height = `${Math.max(8, correct ? (correct / Math.max(total, 1)) * 100 : 8)}%`;
+    els.missedBar.style.height = `${Math.max(8, missed ? (missed / Math.max(total, 1)) * 100 : 8)}%`;
+    renderBadges(stats.badges || []);
+  } catch (error) {
+    renderError(els.badges, error.message || "Could not load profile.");
+  }
+}
+
+function renderProfileSkeleton() {
+  els.totalAnswers.textContent = "-";
+  els.accuracy.textContent = "-";
+  els.avgTime.textContent = "-";
+  els.bestStreak.textContent = "-";
+  els.badges.innerHTML = `<span class="badge">Loading chart...</span>`;
+}
+
+function renderBadges(badges) {
+  els.badges.innerHTML = "";
+  if (!badges.length) {
+    els.badges.innerHTML = '<div class="empty-state">Badges appear here after real server-side unlocks.</div>';
+    return;
+  }
+  badges.forEach((badge) => {
+    const node = document.createElement("span");
+    node.className = "badge";
+    node.textContent = `${iconForBadge(badge.icon)} ${badge.name}`;
+    els.badges.appendChild(node);
+  });
 }
 
 async function loadLeaderboard() {
-  const data = await api("/api/leaderboard?scope=global");
-  renderLeaderList(els.leaders, data.leaders || []);
-  renderLeaderList(els.rankWindow, data.you || []);
+  els.leaders.innerHTML = skeletonRows(5);
+  els.rankWindow.innerHTML = "";
+  try {
+    const data = await api(`/api/leaderboard?scope=${state.leaderboardScope}`);
+    renderLeaderList(els.leaders, data.leaders || [], false);
+    renderLeaderList(els.rankWindow, data.you || [], true);
+  } catch (error) {
+    renderError(els.leaders, error.message || "Could not load leaderboard.");
+  }
 }
 
-function renderLeaderList(container, rows) {
+function renderLeaderList(container, rows, markYou) {
   container.innerHTML = "";
   if (!rows.length) {
-    container.innerHTML = '<p class="feedback">No scores yet.</p>';
+    container.innerHTML = '<div class="empty-state">No scores on this board yet.</div>';
     return;
   }
   rows.forEach((row) => {
+    const isYou = Number(row.telegram_id) === Number(state.user?.id);
     const el = document.createElement("div");
-    el.className = `leader-row top-${row.rank <= 3 ? row.rank : 0}`;
+    el.className = `leader-row top-${row.rank <= 3 ? row.rank : 0} ${markYou && isYou ? "you" : ""}`;
     el.innerHTML = `
       <div class="avatar">${initials(row.username)}</div>
       <div class="leader-name">#${row.rank} ${escapeHtml(row.username || "Player")}</div>
@@ -262,29 +503,32 @@ async function api(path, options = {}) {
 }
 
 function startTimer() {
-  let remaining = state.timerTotal;
-  paintTimer(remaining);
+  state.timerDeadline = Date.now() + state.timerTotal * 1000;
+  paintTimer(state.timerTotal);
   state.timerId = window.setInterval(() => {
-    remaining -= 1;
+    const remaining = Math.max(0, (state.timerDeadline - Date.now()) / 1000);
     paintTimer(remaining);
     if (remaining <= 0) {
       stopTimer();
       loadGridQuestion();
     }
-  }, 1000);
+  }, 250);
 }
 
 function stopTimer() {
   if (state.timerId) window.clearInterval(state.timerId);
   state.timerId = null;
+  document.querySelector(".timer-ring")?.classList.remove("low");
 }
 
 function paintTimer(remaining) {
   const ratio = Math.max(0, remaining / state.timerTotal);
-  const hue = ratio > 0.5 ? 135 : ratio > 0.25 ? 48 : 0;
-  els.timerRing.style.setProperty("--timer-deg", `${ratio * 360}deg`);
-  els.timerRing.style.background = `conic-gradient(hsl(${hue} 70% 42%) ${ratio * 360}deg, color-mix(in srgb, var(--muted) 18%, transparent) 0deg)`;
-  els.timerText.textContent = remaining;
+  const circumference = 169.65;
+  const hue = ratio > 0.5 ? 145 : ratio > 0.24 ? 44 : 5;
+  els.timerProgress.style.strokeDashoffset = `${circumference * (1 - ratio)}`;
+  els.timerProgress.style.stroke = `hsl(${hue} 68% 45%)`;
+  els.timerText.textContent = Math.ceil(remaining);
+  document.querySelector(".timer-ring")?.classList.toggle("low", remaining <= 3 && remaining > 0);
 }
 
 function disableGrid(disabled) {
@@ -318,21 +562,22 @@ function lightFeedback() {
 }
 
 function burstConfetti() {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   const canvas = els.confetti;
   const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
   canvas.width = window.innerWidth * dpr;
   canvas.height = window.innerHeight * dpr;
   ctx.scale(dpr, dpr);
-  const colors = ["#1f9d67", "#2481cc", "#d7a514", "#dc3f4d"];
-  const pieces = Array.from({ length: 42 }, () => ({
+  const colors = ["#1f8f5f", "#0f7f7a", "#d4a62a", "#d95f34"];
+  const pieces = Array.from({ length: 28 }, () => ({
     x: window.innerWidth / 2,
-    y: window.innerHeight * 0.22,
-    vx: (Math.random() - 0.5) * 8,
+    y: window.innerHeight * 0.2,
+    vx: (Math.random() - 0.5) * 7,
     vy: Math.random() * -5 - 2,
-    size: Math.random() * 5 + 4,
+    size: Math.random() * 5 + 3,
     color: colors[Math.floor(Math.random() * colors.length)],
-    life: 52,
+    life: 38,
   }));
   function frame() {
     ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
@@ -350,8 +595,48 @@ function burstConfetti() {
   frame();
 }
 
+function showBadgeToast(badge) {
+  const toast = document.createElement("div");
+  toast.className = "toast";
+  toast.textContent = `${iconForBadge(badge.icon)} Badge unlocked: ${badge.name}`;
+  els.toastStack.appendChild(toast);
+  window.setTimeout(() => toast.remove(), 3200);
+}
+
+function renderError(container, message) {
+  container.hidden = false;
+  container.innerHTML = `<div class="error-state">${escapeHtml(message)}</div>`;
+}
+
+function skeletonChoices(count) {
+  return Array.from({ length: count }, (_, index) => `<div class="flag-choice skeleton" style="--i:${index}"></div>`).join("");
+}
+
+function skeletonCards(count) {
+  return Array.from({ length: count }, (_, index) => `<div class="card skeleton" style="--i:${index}"></div>`).join("");
+}
+
+function skeletonRows(count) {
+  return Array.from({ length: count }, () => `
+    <div class="leader-row">
+      <div class="skeleton avatar-skeleton"></div>
+      <div class="skeleton line wide"></div>
+      <div class="skeleton line"></div>
+    </div>
+  `).join("");
+}
+
 function titleFor(view) {
-  return { grid: "Grid", match: "Match", profile: "Profile", leaderboard: "Ranks" }[view] || "Flag Rush";
+  return { grid: "Quiz", match: "Match", duel: "Duel", profile: "Profile", leaderboard: "Ranks" }[view] || "Flag Atlas";
+}
+
+function labelForCategory(key) {
+  const pack = state.gameOptions?.categories?.find((item) => item.key === key);
+  return pack?.label || "World flags";
+}
+
+function iconForBadge(icon) {
+  return { bolt: "[fast]", flame: "[streak]", medal: "[medal]" }[icon] || "[badge]";
 }
 
 function initials(name = "P") {
@@ -362,6 +647,11 @@ function initials(name = "P") {
     .map((part) => part[0])
     .join("")
     .toUpperCase();
+}
+
+function randomKey() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function kebab(value) {

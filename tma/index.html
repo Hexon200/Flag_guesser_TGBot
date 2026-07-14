@@ -3,45 +3,62 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <title>Flag Rush</title>
-    <link rel="stylesheet" href="/tma/styles.css?v=1.1">
+    <title>Flag Atlas</title>
+    <link rel="stylesheet" href="/tma/design-tokens.css?v=2.0">
+    <link rel="stylesheet" href="/tma/styles.css?v=2.0">
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
-    <main class="app-shell">
+    <main class="app-shell" id="app-shell">
       <section class="topbar">
         <div>
-          <p class="eyebrow">Flag Rush</p>
-          <h1 id="screen-title">Grid</h1>
+          <p class="eyebrow">Flag Atlas</p>
+          <h1 id="screen-title">Quiz</h1>
         </div>
-        <div class="score-pill">
+        <div class="score-pill" aria-live="polite">
           <span>Score</span>
           <strong id="score-value">0</strong>
         </div>
       </section>
 
       <nav class="tabs" aria-label="Game sections">
-        <button class="tab active" data-view="grid" type="button">Grid</button>
+        <button class="tab active" data-view="grid" type="button">Quiz</button>
         <button class="tab" data-view="match" type="button">Match</button>
+        <button class="tab" data-view="duel" type="button">Duel</button>
         <button class="tab" data-view="profile" type="button">Profile</button>
         <button class="tab" data-view="leaderboard" type="button">Ranks</button>
       </nav>
 
-      <section id="auth-panel" class="status-panel">
-        <div class="loader"></div>
-        <p>Opening game session...</p>
+      <section id="auth-panel" class="status-panel skeleton-panel">
+        <div class="skeleton avatar-skeleton"></div>
+        <div>
+          <div class="skeleton line wide"></div>
+          <div class="skeleton line"></div>
+        </div>
       </section>
 
       <section id="grid-view" class="view active" hidden>
+        <div class="control-strip" aria-label="Quiz settings">
+          <div id="difficulty-controls" class="segmented"></div>
+          <select id="category-select" class="select" aria-label="Category"></select>
+        </div>
         <div class="prompt-row">
-          <div>
-            <p class="eyebrow">Find this country</p>
+          <div class="prompt-copy">
+            <p class="eyebrow" id="grid-kicker">Find this country</p>
             <h2 id="grid-prompt">Loading...</h2>
           </div>
-          <button id="grid-next" class="icon-button" type="button" title="Next question">Next</button>
+          <button id="grid-next" class="icon-button" type="button" title="Next question" aria-label="Next question">R</button>
         </div>
-        <div id="timer-ring" class="timer-ring" aria-label="Hard mode timer">
-          <span id="timer-text">15</span>
+        <div id="prompt-flag" class="prompt-flag" hidden></div>
+        <div class="hud-row">
+          <div class="timer-ring" aria-label="Question timer">
+            <svg viewBox="0 0 64 64" aria-hidden="true">
+              <circle class="timer-track" cx="32" cy="32" r="27"></circle>
+              <circle id="timer-progress" class="timer-progress" cx="32" cy="32" r="27"></circle>
+            </svg>
+            <span id="timer-text">15</span>
+          </div>
+          <div id="multiplier" class="multiplier">x1.0</div>
         </div>
         <div id="flag-grid" class="flag-grid"></div>
         <p id="grid-feedback" class="feedback" aria-live="polite"></p>
@@ -51,46 +68,77 @@
         <div class="prompt-row">
           <div>
             <p class="eyebrow">Memory mode</p>
-            <h2>Match flags and names</h2>
+            <h2>Pair flags with names</h2>
           </div>
-          <button id="match-new" class="icon-button" type="button" title="New deck">New</button>
+          <button id="match-new" class="icon-button" type="button" title="New deck" aria-label="New deck">R</button>
         </div>
         <div id="match-board" class="match-board"></div>
         <p id="match-feedback" class="feedback" aria-live="polite"></p>
       </section>
 
+      <section id="duel-view" class="view" hidden>
+        <div class="prompt-row">
+          <div>
+            <p class="eyebrow">Best of N</p>
+            <h2>Quick duel</h2>
+          </div>
+          <select id="duel-format" class="select small" aria-label="Duel format">
+            <option value="bo5">Best of 5</option>
+            <option value="bo10">Best of 10</option>
+          </select>
+        </div>
+        <div class="duel-scoreboard">
+          <div><span>You</span><strong id="duel-you">0</strong></div>
+          <div><span>Opponent</span><strong id="duel-them">0</strong></div>
+        </div>
+        <div class="duel-actions">
+          <button id="quick-match" class="primary-action" type="button">Quick match</button>
+          <button id="cancel-match" class="secondary-action" type="button">Cancel</button>
+        </div>
+        <p id="duel-status" class="feedback">Queue for a live match, then use the room events for play or replay.</p>
+      </section>
+
       <section id="profile-view" class="view" hidden>
-        <div class="panel">
-          <h2 id="profile-name">Profile</h2>
-          <div class="stat-grid">
-            <div><span>Total answers</span><strong id="total-answers">0</strong></div>
-            <div><span>Accuracy</span><strong id="accuracy">0%</strong></div>
-            <div><span>Avg time</span><strong id="avg-time">-</strong></div>
-            <div><span>Best streak</span><strong id="best-streak">0</strong></div>
-          </div>
-          <div class="chart-wrap">
-            <div class="bar correct" id="correct-bar"></div>
-            <div class="bar missed" id="missed-bar"></div>
+        <div class="profile-head">
+          <div class="avatar large" id="profile-avatar">P</div>
+          <div>
+            <p class="eyebrow">Explorer card</p>
+            <h2 id="profile-name">Profile</h2>
           </div>
         </div>
-        <div class="panel">
-          <h3>Badges</h3>
-          <div id="badges" class="badges"></div>
+        <div class="stat-grid">
+          <div><span>Total answers</span><strong id="total-answers">0</strong></div>
+          <div><span>Accuracy</span><strong id="accuracy">0%</strong></div>
+          <div><span>Avg time</span><strong id="avg-time">-</strong></div>
+          <div><span>Best streak</span><strong id="best-streak">0</strong></div>
         </div>
+        <div class="chart-wrap" aria-hidden="true">
+          <div class="bar correct" id="correct-bar"></div>
+          <div class="bar missed" id="missed-bar"></div>
+        </div>
+        <h3>Badges</h3>
+        <div id="badges" class="badges"></div>
       </section>
 
       <section id="leaderboard-view" class="view" hidden>
-        <div class="panel">
-          <h2>Leaderboard</h2>
-          <div id="leaders" class="leader-list"></div>
+        <div class="prompt-row">
+          <div>
+            <p class="eyebrow">Expeditions</p>
+            <h2>Leaderboard</h2>
+          </div>
+          <div id="leaderboard-scope" class="segmented compact">
+            <button data-scope="global" class="active" type="button">Global</button>
+            <button data-scope="daily" type="button">Daily</button>
+          </div>
         </div>
-        <div class="panel">
-          <h3>You are here</h3>
-          <div id="rank-window" class="leader-list compact"></div>
-        </div>
+        <div id="leaders" class="leader-list"></div>
+        <h3>You are here</h3>
+        <div id="rank-window" class="leader-list compact"></div>
       </section>
     </main>
+
+    <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
     <canvas id="confetti-canvas" aria-hidden="true"></canvas>
-    <script type="module" src="/tma/app.js"></script>
+    <script type="module" src="/tma/app.js?v=2.0"></script>
   </body>
 </html>

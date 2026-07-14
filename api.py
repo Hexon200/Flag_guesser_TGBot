@@ -6,7 +6,7 @@ import os
 import random
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import parse_qsl
@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import database
+import game_logic
 from countries import COUNTRIES
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -42,14 +43,20 @@ class AnswerRequest(BaseModel):
     question_id: str
     choice_id: str | None = None
     card_ids: list[str] | None = None
+    idempotency_key: str | None = None
 
 
 class ChallengeCreateRequest(BaseModel):
     mode: str = "duel"
+    format: str = "bo5"
 
 
 class ChallengeJoinRequest(BaseModel):
     duel_id: str
+
+
+class QuickMatchRequest(BaseModel):
+    format: str = "bo5"
 
 
 def create_app() -> FastAPI:
@@ -74,21 +81,51 @@ def create_app() -> FastAPI:
     async def get_question(
         current_user: Annotated[dict, Depends(require_user)],
         mode: str = Query("grid", pattern="^(grid|match)$"),
-        choices_count: int = Query(6, ge=4, le=6),
+        choices_count: int | None = Query(None, ge=4, le=10),
+        difficulty: str = Query("medium", pattern="^(easy|medium|hard)$"),
+        category: str = Query("all"),
     ):
         check_rate_limit(int(current_user["id"]), "question", limit=30, window_seconds=60)
+        selected_tier = game_logic.tier_for(difficulty)
+        selected_category = game_logic.category_for(category)
         if mode == "match":
-            return create_match_deck(int(current_user["id"]))
-        return create_grid_question(int(current_user["id"]), choices_count)
+            return create_match_deck(int(current_user["id"]), selected_category["key"], selected_tier)
+        count = choices_count or selected_tier.choices
+        return create_grid_question(int(current_user["id"]), count, selected_category["key"], selected_tier.key)
+
+    @app.get("/api/game/options")
+    async def game_options(current_user: Annotated[dict, Depends(require_user)]):
+        return {
+            "difficulties": [
+                {
+                    "key": tier.key,
+                    "label": tier.label,
+                    "choices": tier.choices,
+                    "timer_seconds": tier.timer_seconds,
+                    "base_points": tier.base_points,
+                }
+                for tier in game_logic.DIFFICULTY_TIERS.values()
+            ],
+            "categories": game_logic.CATEGORY_PACKS,
+            "daily_total": game_logic.DAILY_QUESTION_COUNT,
+        }
 
     @app.post("/api/quiz/answer")
     async def answer_question(payload: AnswerRequest, current_user: Annotated[dict, Depends(require_user)]):
         telegram_id = int(current_user["id"])
         check_rate_limit(telegram_id, "answer", limit=45, window_seconds=60)
+        receipt_key = payload.idempotency_key or default_idempotency_key(payload)
+        receipt = database.get_answer_receipt(receipt_key, telegram_id)
+        if receipt:
+            return receipt
+
         session = database.get_question_session(payload.question_id, telegram_id)
         if not session:
             raise HTTPException(status_code=404, detail="Question not found")
         if session["answered_at"] and session["mode"] == "grid":
+            previous = database.get_previous_grid_response(payload.question_id, telegram_id)
+            if previous:
+                return previous
             raise HTTPException(status_code=409, detail="Question already answered")
 
         if session["mode"] == "match":
@@ -97,6 +134,19 @@ def create_app() -> FastAPI:
             result = resolve_grid_answer(session, payload)
 
         username = current_user.get("username") or current_user.get("first_name") or "Player"
+        tier = game_logic.tier_for(session.get("difficulty"))
+        stats_before = database.get_user_stats(telegram_id)
+        previous_streak = int(stats_before["streak"] or 0) if stats_before else 0
+        suspicious = game_logic.answer_is_suspicious(result["response_ms"])
+        scoring = game_logic.score_for_answer(result["correct"] and not suspicious, previous_streak, tier)
+        new_stats = database.apply_score(
+            telegram_id=telegram_id,
+            is_correct=result["correct"] and not suspicious,
+            points=scoring["points"],
+            next_streak=scoring["next_streak"],
+            username=username,
+        )
+
         database.log_quiz_answer(
             telegram_id=telegram_id,
             username=username,
@@ -107,19 +157,33 @@ def create_app() -> FastAPI:
             correct_answer=result["correct_answer"],
             is_correct=result["correct"],
             response_ms=result["response_ms"],
+            country_name=result.get("country_name"),
+            continent=result.get("continent"),
+            category=session.get("category") or "all",
+            difficulty=session.get("difficulty") or "medium",
+            points_awarded=scoring["points"],
+            streak_after=new_stats["streak"],
+            multiplier=scoring["multiplier"],
+            is_suspicious=suspicious,
         )
-        new_stats = database.update_score(telegram_id, result["correct"], username)
 
         if session["mode"] == "grid" or result.get("completed"):
             database.mark_question_answered(payload.question_id, telegram_id)
 
-        return {
+        new_badges = database.evaluate_badges(telegram_id)
+        response = {
             "correct": result["correct"],
             "completed": result.get("completed", False),
             "matched_card_ids": result.get("matched_card_ids", []),
             "correct_answer": result["correct_answer"],
             "stats": new_stats,
+            "points_awarded": scoring["points"],
+            "multiplier": scoring["multiplier"],
+            "suspicious": suspicious,
+            "new_badges": new_badges,
         }
+        database.save_answer_receipt(receipt_key, telegram_id, payload.question_id, response)
+        return response
 
     @app.get("/api/profile/stats")
     async def profile_stats(current_user: Annotated[dict, Depends(require_user)]):
@@ -127,12 +191,19 @@ def create_app() -> FastAPI:
 
     @app.get("/api/leaderboard")
     async def leaderboard(current_user: Annotated[dict, Depends(require_user)], scope: str = "global"):
-        if scope != "global":
-            raise HTTPException(status_code=400, detail="Only global leaderboard is available in phase 1")
         telegram_id = int(current_user["id"])
+        if scope == "daily":
+            return {
+                "leaders": database.get_daily_leaderboard(date.today().isoformat(), 10),
+                "you": [],
+                "scope": "daily",
+            }
+        if scope != "global":
+            raise HTTPException(status_code=400, detail="Unknown leaderboard scope")
         return {
             "leaders": database.get_leaderboard_with_ranks(10),
             "you": database.get_user_rank_window(telegram_id),
+            "scope": "global",
         }
 
     @app.post("/api/challenge/create")
@@ -141,7 +212,8 @@ def create_app() -> FastAPI:
         check_rate_limit(telegram_id, "challenge", limit=8, window_seconds=60)
         duel_id = uuid.uuid4().hex[:12]
         database.create_duel_session(duel_id, telegram_id)
-        return {"duel_id": duel_id, "mode": payload.mode, "status": "waiting"}
+        database.log_duel_event(duel_id, telegram_id, "created", {"format": payload.format, "mode": payload.mode})
+        return {"duel_id": duel_id, "mode": payload.mode, "format": payload.format, "status": "waiting"}
 
     @app.post("/api/challenge/join")
     async def join_challenge(current_user: Annotated[dict, Depends(require_user)], payload: ChallengeJoinRequest):
@@ -153,7 +225,40 @@ def create_app() -> FastAPI:
         if duel["creator_id"] == telegram_id:
             raise HTTPException(status_code=400, detail="Creator cannot join as opponent")
         database.join_duel_session(payload.duel_id, telegram_id)
+        database.log_duel_event(payload.duel_id, telegram_id, "joined", {})
         return {"duel_id": payload.duel_id, "status": "ready"}
+
+    @app.post("/api/matchmaking/quick-match")
+    async def quick_match(current_user: Annotated[dict, Depends(require_user)], payload: QuickMatchRequest):
+        telegram_id = int(current_user["id"])
+        check_rate_limit(telegram_id, "matchmaking", limit=10, window_seconds=60)
+        match_format = payload.format if payload.format in {"bo5", "bo10"} else "bo5"
+        duel_id = uuid.uuid4().hex[:12]
+        result = database.quick_match(telegram_id, duel_id, match_format)
+        if result["duel_id"]:
+            database.log_duel_event(result["duel_id"], telegram_id, "quick_match_ready", {"format": match_format})
+        return result
+
+    @app.delete("/api/matchmaking/quick-match")
+    async def cancel_quick_match(current_user: Annotated[dict, Depends(require_user)]):
+        telegram_id = int(current_user["id"])
+        database.cancel_quick_match(telegram_id)
+        return {"status": "cancelled"}
+
+    @app.get("/api/matchmaking/status")
+    async def matchmaking_status(current_user: Annotated[dict, Depends(require_user)]):
+        telegram_id = int(current_user["id"])
+        duel = database.get_active_duel_for_user(telegram_id)
+        if duel:
+            return {"status": duel["status"], "duel_id": duel["duel_id"]}
+        return {"status": "waiting"}
+
+    @app.get("/api/duel/{duel_id}/replay")
+    async def duel_replay(duel_id: str, current_user: Annotated[dict, Depends(require_user)]):
+        duel = database.get_duel_session(duel_id)
+        if not duel:
+            raise HTTPException(status_code=404, detail="Duel not found")
+        return {"duel": duel, "events": database.get_duel_events(duel_id)}
 
     @app.websocket("/ws/duel/{duel_id}")
     async def duel_socket(websocket: WebSocket, duel_id: str):
@@ -238,31 +343,59 @@ def public_user(user: dict) -> dict:
     }
 
 
-def create_grid_question(telegram_id: int, choices_count: int) -> dict:
-    correct = random.choice(COUNTRIES)
-    wrong = random.sample([country for country in COUNTRIES if country["name"] != correct["name"]], choices_count - 1)
+def create_grid_question(telegram_id: int, choices_count: int, category_key: str = "all", difficulty: str = "medium") -> dict:
+    tier = game_logic.tier_for(difficulty)
+    if category_key == "daily":
+        answered = database.get_daily_answer_count(telegram_id, date.today().isoformat())
+        correct = game_logic.daily_country_for_index(answered)
+        daily_progress = {"answered": min(answered, game_logic.DAILY_QUESTION_COUNT), "total": game_logic.DAILY_QUESTION_COUNT}
+    else:
+        performance = database.get_user_country_performance(telegram_id)
+        correct = game_logic.choose_country(telegram_id, category_key, tier, performance)
+        daily_progress = None
+    question_kind = "capital" if category_key == "capitals" else "country"
+    wrong = game_logic.make_wrong_choices(correct, category_key, min(choices_count, tier.choices))
     countries = [correct] + wrong
     random.shuffle(countries)
-    choices = [make_choice(country) for country in countries]
+    choices = [make_choice(country, question_kind) for country in countries]
+    if question_kind == "capital":
+        for choice in choices:
+            choice["expected_answer"] = correct["capital"]
+            choice["correct_continent"] = correct["continent"]
     question_id = uuid.uuid4().hex
+    prompt_text = correct["name"] if question_kind == "country" else "Name the capital"
     database.create_question_session(
         question_id=question_id,
         telegram_id=telegram_id,
         mode="grid",
-        prompt=correct["name"],
+        prompt=prompt_text,
         correct_country=correct["name"],
         choices=choices,
+        category=category_key,
+        difficulty=tier.key,
+        question_kind=question_kind,
+        timer_seconds=tier.timer_seconds,
     )
-    return {
+    question = {
         "question_id": question_id,
         "mode": "grid",
-        "prompt": {"type": "country_name", "text": correct["name"]},
-        "choices": [{"id": choice["id"], "flag_url": choice["flag_url"]} for choice in choices],
+        "difficulty": tier.key,
+        "category": category_key,
+        "timer_seconds": tier.timer_seconds,
+        "prompt": prompt_for_country(correct, question_kind),
+        "choices": [client_choice(choice, question_kind) for choice in choices],
     }
+    if daily_progress:
+        question["daily_progress"] = daily_progress
+    return question
 
 
-def create_match_deck(telegram_id: int) -> dict:
-    selected = random.sample(COUNTRIES, 4)
+def create_match_deck(telegram_id: int, category_key: str = "all", tier: game_logic.DifficultyTier | None = None) -> dict:
+    tier = tier or game_logic.DIFFICULTY_TIERS["medium"]
+    pool = game_logic.countries_for_tier(game_logic.countries_for_category(category_key), tier)
+    if len(pool) < 4:
+        pool = list(COUNTRIES)
+    selected = random.sample(pool, 4)
     cards = []
     stored_choices = []
     for country in selected:
@@ -270,12 +403,14 @@ def create_match_deck(telegram_id: int) -> dict:
             "id": uuid.uuid4().hex,
             "kind": "name",
             "country": country["name"],
+            "continent": country["continent"],
             "label": country["name"],
         }
         flag_card = {
             "id": uuid.uuid4().hex,
             "kind": "flag",
             "country": country["name"],
+            "continent": country["continent"],
             "flag_url": flag_url(country),
         }
         cards.extend([client_card(text_card), client_card(flag_card)])
@@ -289,8 +424,12 @@ def create_match_deck(telegram_id: int) -> dict:
         prompt="Match countries to flags",
         correct_country="",
         choices=stored_choices,
+        category=category_key,
+        difficulty=tier.key,
+        question_kind="match",
+        timer_seconds=0,
     )
-    return {"question_id": question_id, "mode": "match", "cards": cards}
+    return {"question_id": question_id, "mode": "match", "category": category_key, "difficulty": tier.key, "cards": cards}
 
 
 def resolve_grid_answer(session: dict, payload: AnswerRequest) -> dict:
@@ -299,11 +438,16 @@ def resolve_grid_answer(session: dict, payload: AnswerRequest) -> dict:
     selected = next((choice for choice in session["choices"] if choice["id"] == payload.choice_id), None)
     if not selected:
         raise HTTPException(status_code=400, detail="Choice not found")
-    correct = selected["country"] == session["correct_country"]
+    question_kind = session.get("question_kind") or "country"
+    correct_answer = selected.get("expected_answer") or session["correct_country"]
+    correct = selected["answer"] == correct_answer
     return {
         "correct": correct,
-        "selected_answer": selected["country"],
-        "correct_answer": session["correct_country"],
+        "selected_answer": selected["answer"],
+        "correct_answer": correct_answer,
+        "country_name": session["correct_country"],
+        "continent": selected.get("correct_continent") or selected.get("continent"),
+        "question_kind": question_kind,
         "response_ms": response_ms(session),
     }
 
@@ -323,18 +467,63 @@ def resolve_match_answer(session: dict, payload: AnswerRequest) -> dict:
         "matched_card_ids": matched_ids,
         "selected_answer": " + ".join(choice["country"] for choice in selected),
         "correct_answer": selected[0]["country"] if correct else "matching country and flag",
+        "country_name": selected[0]["country"] if correct else None,
+        "continent": selected[0].get("continent"),
         "response_ms": response_ms(session),
     }
 
 
-def make_choice(country: dict) -> dict:
-    return {"id": uuid.uuid4().hex, "country": country["name"], "flag_url": flag_url(country)}
+def make_choice(country: dict, question_kind: str = "country") -> dict:
+    if question_kind == "capital":
+        return {
+            "id": uuid.uuid4().hex,
+            "country": country["name"],
+            "answer": country["capital"],
+            "expected_answer": country["capital"],
+            "label": country["capital"],
+            "flag_url": flag_url(country),
+            "continent": country["continent"],
+            "correct_continent": country["continent"],
+        }
+    return {
+        "id": uuid.uuid4().hex,
+        "country": country["name"],
+        "answer": country["name"],
+        "label": country["name"],
+        "flag_url": flag_url(country),
+        "continent": country["continent"],
+    }
+
+
+def prompt_for_country(country: dict, question_kind: str) -> dict:
+    if question_kind == "capital":
+        return {
+            "type": "flag_to_capital",
+            "text": "Which capital belongs to this flag?",
+            "flag_url": flag_url(country),
+            "country": country["name"],
+        }
+    return {"type": "country_name", "text": country["name"]}
+
+
+def client_choice(choice: dict, question_kind: str) -> dict:
+    if question_kind == "capital":
+        return {"id": choice["id"], "label": choice["label"]}
+    return {"id": choice["id"], "flag_url": choice["flag_url"]}
 
 
 def client_card(card: dict) -> dict:
     if card["kind"] == "flag":
         return {"id": card["id"], "kind": "flag", "flag_url": card["flag_url"]}
     return {"id": card["id"], "kind": "name", "label": card["label"]}
+
+
+def default_idempotency_key(payload: AnswerRequest) -> str:
+    if payload.choice_id:
+        return f"{payload.question_id}:choice:{payload.choice_id}"
+    if payload.card_ids:
+        return f"{payload.question_id}:cards:{':'.join(sorted(payload.card_ids))}"
+    return f"{payload.question_id}:empty"
 
 
 def flag_url(country: dict) -> str:

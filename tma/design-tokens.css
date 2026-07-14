@@ -1,0 +1,78 @@
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,700;9..144,900&family=Manrope:wght@500;700;800&display=swap");
+
+:root {
+  --font-display: "Fraunces", Georgia, serif;
+  --font-body: "Manrope", Arial, sans-serif;
+
+  --type-12: 12px;
+  --type-14: 14px;
+  --type-16: 16px;
+  --type-20: 20px;
+  --type-28: 28px;
+  --type-40: 40px;
+
+  --space-4: 4px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-10: 10px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-20: 20px;
+  --space-24: 24px;
+
+  --radius-4: 4px;
+  --radius-6: 6px;
+  --radius-8: 8px;
+  --radius-pill: 999px;
+
+  --motion-fast: 150ms;
+  --motion-base: 250ms;
+  --motion-slow: 400ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --paper: var(--tg-theme-bg-color, #f7efe1);
+  --paper-raised: var(--tg-theme-secondary-bg-color, #fff9eb);
+  --ink: var(--tg-theme-text-color, #243126);
+  --ink-muted: var(--tg-theme-hint-color, #766f61);
+  --route-primary: var(--tg-theme-button-color, #0f7f7a);
+  --route-primary-text: var(--tg-theme-button-text-color, #fffaf0);
+  --route-secondary: #d95f34;
+  --success: #1f8f5f;
+  --warning: #d4a62a;
+  --danger: #be3d32;
+  --neutral-50: #fffaf0;
+  --neutral-100: #f7efe1;
+  --neutral-200: #eadcc4;
+  --neutral-400: #a89b84;
+  --neutral-700: #4d463a;
+  --neutral-900: #211c17;
+  --gold: #c79628;
+  --silver: #9ba6a8;
+  --bronze: #a86737;
+  --shadow-lift: 0 12px 28px rgba(58, 44, 28, 0.16);
+  --shadow-press: 0 2px 0 rgba(58, 44, 28, 0.28);
+
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: var(--tg-theme-bg-color, #171b18);
+    --paper-raised: var(--tg-theme-secondary-bg-color, #232820);
+    --ink: var(--tg-theme-text-color, #f6ecd8);
+    --ink-muted: var(--tg-theme-hint-color, #b9ab91);
+    --route-primary: var(--tg-theme-button-color, #41b7a8);
+    --route-primary-text: var(--tg-theme-button-text-color, #11201d);
+    --route-secondary: #f08b55;
+    --success: #4bc884;
+    --warning: #e7bd45;
+    --danger: #f0675d;
+    --neutral-50: #232820;
+    --neutral-100: #171b18;
+    --neutral-200: #3a4035;
+    --neutral-400: #8c947f;
+    --neutral-700: #ddd0b9;
+    --neutral-900: #fff7e8;
+    --shadow-lift: 0 14px 32px rgba(0, 0, 0, 0.32);
+  }
+}
