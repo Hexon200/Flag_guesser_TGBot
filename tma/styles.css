@@ -242,7 +242,10 @@ h3 {
 }
 
 .card {
+  display: block;
+  width: 100%;
   aspect-ratio: 1 / 1.18;
+  min-height: 80px;
   perspective: 800px;
   -webkit-perspective: 800px;
   border: 0;
