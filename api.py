@@ -338,11 +338,7 @@ def client_card(card: dict) -> dict:
 
 
 def flag_url(country: dict) -> str:
-    url = country["flag_url"]
-    if "flagcdn.com/w320/" in url and url.endswith(".png"):
-        code = url.rsplit("/", 1)[-1].removesuffix(".png")
-        return f"https://flagcdn.com/{code}.svg"
-    return url
+    return country["flag_url"]
 
 
 def response_ms(session: dict) -> int | None:
