@@ -1049,8 +1049,8 @@ def start_api_server() -> None:
     def run_server():
         import uvicorn
 
-        host = os.getenv("TMA_HOST", "127.0.0.1")
-        port = int(os.getenv("TMA_PORT", "8000"))
+        host = os.getenv("TMA_HOST", "0.0.0.0")
+        port = int(os.getenv("PORT") or os.getenv("TMA_PORT") or "8000")
         uvicorn.run("api:app", host=host, port=port, log_level=os.getenv("TMA_LOG_LEVEL", "info"))
 
     thread = threading.Thread(target=run_server, name="tma-api", daemon=True)
