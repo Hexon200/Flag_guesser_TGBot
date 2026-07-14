@@ -8,6 +8,7 @@ const state = {
   leaderboardScope: "global",
   gameOptions: null,
   gridQuestion: null,
+  answerTrail: [],
   timerId: null,
   timerTotal: 15,
   timerDeadline: 0,
@@ -34,6 +35,7 @@ const els = {
   promptFlag: document.getElementById("prompt-flag"),
   flagGrid: document.getElementById("flag-grid"),
   gridFeedback: document.getElementById("grid-feedback"),
+  answerTrail: document.getElementById("answer-trail"),
   gridNext: document.getElementById("grid-next"),
   timerProgress: document.getElementById("timer-progress"),
   timerText: document.getElementById("timer-text"),
@@ -211,7 +213,6 @@ async function showView(view) {
 
 async function loadGridQuestion() {
   stopTimer();
-  clearFeedback(els.gridFeedback);
   els.countryCard.hidden = true;
   els.flagGrid.innerHTML = skeletonChoices(6);
   els.promptFlag.hidden = true;
@@ -259,7 +260,7 @@ function renderGridChoices(question) {
   els.flagGrid.innerHTML = "";
   question.choices.forEach((choice, index) => {
     const button = document.createElement("button");
-    button.className = "flag-choice";
+    button.className = `flag-choice${choice.flag_url ? "" : " text-choice"}`;
     button.type = "button";
     button.dataset.choiceId = choice.id;
     button.style.setProperty("--i", index);
@@ -287,7 +288,7 @@ async function answerGrid(choiceId, button) {
       }),
     });
     applyAnswerResult(result, button, els.gridFeedback);
-    window.setTimeout(loadGridQuestion, result.daily_completed ? 900 : result.suspicious ? 1600 : 1150);
+    if (result.daily_completed) window.setTimeout(loadGridQuestion, 900);
   } catch (error) {
     feedback(els.gridFeedback, error.message || "Answer was not saved.", false);
     disableGrid(false);
@@ -332,7 +333,23 @@ function applyAnswerResult(result, button, feedbackEl) {
     errorFeedback();
   }
   (result.new_badges || []).forEach(showBadgeToast);
+  addAnswerTrail(result);
   if (result.country_name) showCountryInfo(result.country_name);
+}
+
+function addAnswerTrail(result) {
+  const item = {
+    good: result.correct && !result.suspicious,
+    text: result.suspicious ? "Too fast" : result.correct ? result.correct_answer : `Missed: ${result.correct_answer}`,
+  };
+  state.answerTrail = [item, ...state.answerTrail].slice(0, 5);
+  renderAnswerTrail();
+}
+
+function renderAnswerTrail() {
+  els.answerTrail.innerHTML = state.answerTrail
+    .map((item) => `<span class="${item.good ? "good" : "bad"}">${escapeHtml(item.text)}</span>`)
+    .join("");
 }
 
 async function showCountryInfo(countryName) {

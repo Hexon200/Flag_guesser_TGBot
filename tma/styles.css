@@ -352,9 +352,19 @@ h3 {
   display: grid;
   min-height: 88px;
   place-items: center;
+  color: inherit;
   font-weight: 900;
   line-height: 1.15;
   text-align: center;
+}
+
+.flag-choice.text-choice {
+  background: color-mix(in srgb, var(--route-primary) 82%, var(--neutral-900));
+  color: #ffffff;
+}
+
+.flag-choice.text-choice:hover {
+  background: var(--route-primary);
 }
 
 .flag-choice.correct,
@@ -417,6 +427,36 @@ h3 {
 }
 
 .feedback.bad {
+  color: var(--danger);
+}
+
+.answer-trail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+  min-height: 34px;
+  margin-top: var(--space-8);
+}
+
+.answer-trail span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: var(--space-6) var(--space-10);
+  border: 1px solid var(--neutral-200);
+  border-radius: var(--radius-pill);
+  background: var(--paper-raised);
+  font-size: var(--type-12);
+  font-weight: 900;
+}
+
+.answer-trail .good {
+  border-color: color-mix(in srgb, var(--success) 58%, var(--neutral-200));
+  color: var(--success);
+}
+
+.answer-trail .bad {
+  border-color: color-mix(in srgb, var(--danger) 58%, var(--neutral-200));
   color: var(--danger);
 }
 
