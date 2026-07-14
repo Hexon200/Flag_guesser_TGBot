@@ -53,6 +53,7 @@ CONTINENTS = sorted({country["continent"] for country in COUNTRIES})
 
 CATEGORY_PACKS = [
     {"key": "all", "label": "World flags", "kind": "flags"},
+    {"key": "training", "label": "Training", "kind": "training"},
     {"key": "similar", "label": "Similar flags", "kind": "flags"},
     {"key": "capitals", "label": "Capital cities", "kind": "capitals"},
     {"key": "daily", "label": "Daily challenge", "kind": "daily"},
@@ -64,6 +65,14 @@ CATEGORY_PACKS = [
 
 DAILY_QUESTION_COUNT = 12
 MIN_PLAUSIBLE_RESPONSE_MS = 150
+
+LEVELS = [
+    (0, "Explorer"),
+    (150, "Cartographer"),
+    (450, "Ambassador"),
+    (900, "Globe Master"),
+    (1600, "Atlas Legend"),
+]
 
 BADGE_RULES = [
     {
@@ -100,7 +109,7 @@ def countries_for_category(category_key: str) -> list[dict[str, Any]]:
     if category_key.startswith("continent:"):
         continent = category_key.split(":", 1)[1]
         return [country for country in COUNTRIES if country["continent"] == continent]
-    if category_key == "similar":
+    if category_key in {"similar", "training"}:
         names = set().union(*SIMILAR_FLAG_GROUPS)
         return [country for country in COUNTRIES if country["name"] in names]
     return list(COUNTRIES)
@@ -172,7 +181,7 @@ def daily_country_for_index(index: int, day: date | None = None) -> dict[str, An
 
 def score_for_answer(is_correct: bool, previous_streak: int, tier: DifficultyTier) -> dict[str, Any]:
     if not is_correct:
-        return {"points": 0, "multiplier": 1.0, "next_streak": 0}
+        return {"points": 0, "xp": 1, "multiplier": 1.0, "next_streak": 0}
     next_streak = previous_streak + 1
     if next_streak >= 10:
         multiplier = 2.0
@@ -184,6 +193,7 @@ def score_for_answer(is_correct: bool, previous_streak: int, tier: DifficultyTie
         multiplier = 1.0
     return {
         "points": round(tier.base_points * multiplier),
+        "xp": round(tier.base_points * multiplier) + 5,
         "multiplier": multiplier,
         "next_streak": next_streak,
     }
@@ -191,6 +201,54 @@ def score_for_answer(is_correct: bool, previous_streak: int, tier: DifficultyTie
 
 def answer_is_suspicious(response_ms: int | None) -> bool:
     return response_ms is not None and response_ms < MIN_PLAUSIBLE_RESPONSE_MS
+
+
+def level_for_xp(xp: int) -> dict[str, Any]:
+    current = LEVELS[0]
+    next_level = None
+    for index, level in enumerate(LEVELS):
+        if xp >= level[0]:
+            current = level
+            next_level = LEVELS[index + 1] if index + 1 < len(LEVELS) else None
+    return {
+        "title": current[1],
+        "xp": xp,
+        "level_floor": current[0],
+        "next_title": next_level[1] if next_level else None,
+        "next_xp": next_level[0] if next_level else None,
+    }
+
+
+def mission_progress(stats: dict[str, Any], session_context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    session_context = session_context or {}
+    streak = int(stats.get("streak", 0) or 0)
+    max_streak = int(stats.get("max_streak", 0) or 0)
+    return [
+        {
+            "key": "europe_streak_10",
+            "title": "Europe Run",
+            "description": "Get 10 Europe flags in a row.",
+            "progress": min(streak if session_context.get("category") == "continent:Europe" else 0, 10),
+            "target": 10,
+            "completed": session_context.get("category") == "continent:Europe" and streak >= 10,
+        },
+        {
+            "key": "hard_streak_5",
+            "title": "Hard Sprint",
+            "description": "Build a 5-answer streak on Hard.",
+            "progress": min(streak if session_context.get("difficulty") == "hard" else 0, 5),
+            "target": 5,
+            "completed": session_context.get("difficulty") == "hard" and streak >= 5,
+        },
+        {
+            "key": "streak_20",
+            "title": "Long Haul",
+            "description": "Reach a 20-answer streak.",
+            "progress": min(max_streak, 20),
+            "target": 20,
+            "completed": max_streak >= 20,
+        },
+    ]
 
 
 def badge_seed_rows() -> list[tuple[str, str, str, str, str]]:

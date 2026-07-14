@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>Flag Atlas</title>
-    <link rel="stylesheet" href="/tma/design-tokens.css?v=2.4">
-    <link rel="stylesheet" href="/tma/styles.css?v=2.4">
+    <link rel="stylesheet" href="/tma/design-tokens.css?v=2.6">
+    <link rel="stylesheet" href="/tma/styles.css?v=2.6">
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
@@ -19,10 +19,12 @@
           <span>Score</span>
           <strong id="score-value">0</strong>
         </div>
+        <button id="sound-toggle" class="sound-toggle" type="button" aria-pressed="false">Sound off</button>
       </section>
 
       <nav class="tabs" aria-label="Game sections">
         <button class="tab active" data-view="grid" type="button">Quiz</button>
+        <button class="tab" data-view="training" type="button">Train</button>
         <button class="tab" data-view="daily" type="button">Daily</button>
         <button class="tab" data-view="duel" type="button">Duel</button>
         <button class="tab" data-view="profile" type="button">Profile</button>
@@ -71,10 +73,27 @@
               <h2 id="summary-title">Summary</h2>
             </div>
             <button id="review-missed" class="primary-action compact-action" type="button">Learn missed</button>
+            <button id="share-summary" class="secondary-action compact-action" type="button">Share card</button>
           </div>
           <div id="summary-stats" class="stat-grid"></div>
           <div id="missed-flags" class="review-list"></div>
         </div>
+      </section>
+
+      <section id="training-view" class="view" hidden>
+        <div class="prompt-row">
+          <div>
+            <p class="eyebrow">Weak spots</p>
+            <h2>Training mode</h2>
+          </div>
+          <button id="training-start" class="primary-action compact-action" type="button">Start</button>
+        </div>
+        <div class="daily-panel">
+          <div><span>Source</span><strong>Misses</strong></div>
+          <div><span>Fallback</span><strong>Similar</strong></div>
+        </div>
+        <div id="training-review" class="review-list"></div>
+        <p id="training-feedback" class="feedback">Endless practice with flags you missed or commonly confuse.</p>
       </section>
 
       <section id="daily-view" class="view" hidden>
@@ -114,6 +133,7 @@
           <div><span>You</span><strong id="duel-you">0</strong></div>
           <div><span>Opponent</span><strong id="duel-them">0</strong></div>
         </div>
+        <div id="duel-lobby" class="lobby-panel"></div>
         <div class="duel-actions">
           <button id="quick-match" class="primary-action" type="button">Quick duel</button>
           <button id="invite-duel" class="secondary-action" type="button">Invite</button>
@@ -139,6 +159,8 @@
             <h2 id="profile-name">Profile</h2>
           </div>
         </div>
+        <div id="level-card" class="level-card"></div>
+        <div id="missions" class="mission-list"></div>
         <div class="stat-grid">
           <div><span>Total answers</span><strong id="total-answers">0</strong></div>
           <div><span>Accuracy</span><strong id="accuracy">0%</strong></div>
@@ -173,6 +195,6 @@
 
     <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
     <canvas id="confetti-canvas" aria-hidden="true"></canvas>
-    <script type="module" src="/tma/app.js?v=2.4"></script>
+    <script type="module" src="/tma/app.js?v=2.6"></script>
   </body>
 </html>

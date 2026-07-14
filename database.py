@@ -56,6 +56,7 @@ def run_migrations():
 
 def ensure_runtime_schema():
     with get_db_connection() as conn:
+        ensure_column(conn, "users", "xp", "INTEGER DEFAULT 0")
         ensure_column(conn, "tma_question_sessions", "category", "TEXT DEFAULT 'all'")
         ensure_column(conn, "tma_question_sessions", "difficulty", "TEXT DEFAULT 'medium'")
         ensure_column(conn, "tma_question_sessions", "question_kind", "TEXT DEFAULT 'country'")
@@ -117,7 +118,7 @@ def ensure_user(telegram_id: int, username: str):
 def get_user_stats(telegram_id: int):
     with get_db_connection() as conn:
         return conn.execute(
-"SELECT score, streak, max_streak FROM users WHERE telegram_id = ?", (telegram_id,)
+"SELECT score, streak, max_streak, xp FROM users WHERE telegram_id = ?", (telegram_id,)
         ).fetchone()
     
 def update_score(telegram_id: int, is_correct: bool, username: str = "Player"):
@@ -151,6 +152,7 @@ def apply_score(
     telegram_id: int,
     is_correct: bool,
     points: int,
+    xp: int,
     next_streak: int,
     username: str = "Player",
 ):
@@ -159,14 +161,16 @@ def apply_score(
     if not stats:
         return {"score": 0, "streak": 0, "max_streak": 0}
     score = int(stats["score"]) + (points if is_correct else 0)
+    total_xp = int(stats["xp"] or 0) + max(0, int(xp or 0))
     max_streak = max(int(stats["max_streak"]), next_streak)
     with get_db_connection() as conn:
         conn.execute(
-            "UPDATE users SET score = ?, streak = ?, max_streak = ? WHERE telegram_id = ?",
-            (score, next_streak, max_streak, telegram_id),
+            "UPDATE users SET score = ?, streak = ?, max_streak = ?, xp = ? WHERE telegram_id = ?",
+            (score, next_streak, max_streak, total_xp, telegram_id),
         )
         conn.commit()
-    return {"score": score, "streak": next_streak, "max_streak": max_streak}
+    level = game_logic.level_for_xp(total_xp)
+    return {"score": score, "streak": next_streak, "max_streak": max_streak, "xp": total_xp, "level": level}
     
 def get_leaderboard(limit: int = 10):
     with get_db_connection() as conn:
@@ -335,7 +339,7 @@ def get_profile_stats(telegram_id: int):
     with get_db_connection() as conn:
         user = conn.execute(
             """
-            SELECT telegram_id, username, score, streak, max_streak
+            SELECT telegram_id, username, score, streak, max_streak, xp
             FROM users
             WHERE telegram_id = ?
             """,
@@ -379,8 +383,12 @@ def get_profile_stats(telegram_id: int):
             """,
             (telegram_id,),
         ).fetchall()
+        user_dict = dict(user) if user else None
+        level = game_logic.level_for_xp(int(user_dict.get("xp") or 0)) if user_dict else game_logic.level_for_xp(0)
         return {
-            "user": dict(user) if user else None,
+            "user": user_dict,
+            "level": level,
+            "missions": game_logic.mission_progress(user_dict or {}),
             "answers": dict(totals),
             "duels": dict(duel_totals),
             "badges": [dict(row) for row in badges],
@@ -757,6 +765,44 @@ def complete_duel_session(duel_id: str, creator_score: int, opponent_score: int)
             (creator_score, opponent_score, duel_id),
         )
         conn.commit()
+
+def get_duel_lobby(duel_id: str):
+    with get_db_connection() as conn:
+        duel = conn.execute("SELECT * FROM duel_sessions WHERE duel_id = ?", (duel_id,)).fetchone()
+        if not duel:
+            return None
+        duel_dict = dict(duel)
+        player_ids = [duel_dict.get("creator_id"), duel_dict.get("opponent_id")]
+        players = []
+        for player_id in [pid for pid in player_ids if pid]:
+            user = conn.execute(
+                "SELECT telegram_id, username, score, streak, max_streak, xp FROM users WHERE telegram_id = ?",
+                (player_id,),
+            ).fetchone()
+            user_dict = dict(user) if user else {"telegram_id": player_id, "username": "Player", "score": 0, "streak": 0, "max_streak": 0, "xp": 0}
+            user_dict["level"] = game_logic.level_for_xp(int(user_dict.get("xp") or 0))
+            players.append(user_dict)
+        history = 0
+        if duel_dict.get("creator_id") and duel_dict.get("opponent_id"):
+            history_row = conn.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM duel_sessions
+                WHERE status = 'completed'
+                  AND (
+                    (creator_id = ? AND opponent_id = ?)
+                    OR (creator_id = ? AND opponent_id = ?)
+                  )
+                """,
+                (
+                    duel_dict["creator_id"],
+                    duel_dict["opponent_id"],
+                    duel_dict["opponent_id"],
+                    duel_dict["creator_id"],
+                ),
+            ).fetchone()
+            history = int(history_row["total"] or 0)
+        return {"duel": duel_dict, "players": players, "history_count": history}
 
 def get_duel_session(duel_id: str):
     with get_db_connection() as conn:

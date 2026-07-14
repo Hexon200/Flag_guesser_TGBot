@@ -19,6 +19,9 @@ const state = {
   duelSelectedButton: null,
   duelTimerId: null,
   dailyRankStart: null,
+  soundEnabled: localStorage.getItem("flag-atlas-sound") === "1",
+  lastShareSummary: null,
+  missionToastKeys: new Set(),
 };
 
 const els = {
@@ -26,6 +29,7 @@ const els = {
   authPanel: document.getElementById("auth-panel"),
   screenTitle: document.getElementById("screen-title"),
   scoreValue: document.getElementById("score-value"),
+  soundToggle: document.getElementById("sound-toggle"),
   tabs: document.querySelectorAll(".tab"),
   views: document.querySelectorAll(".view"),
   difficultyControls: document.getElementById("difficulty-controls"),
@@ -46,6 +50,10 @@ const els = {
   summaryStats: document.getElementById("summary-stats"),
   missedFlags: document.getElementById("missed-flags"),
   reviewMissed: document.getElementById("review-missed"),
+  shareSummary: document.getElementById("share-summary"),
+  trainingStart: document.getElementById("training-start"),
+  trainingReview: document.getElementById("training-review"),
+  trainingFeedback: document.getElementById("training-feedback"),
   dailyStart: document.getElementById("daily-start"),
   dailyTotal: document.getElementById("daily-total"),
   dailyLeaders: document.getElementById("daily-leaders"),
@@ -57,6 +65,7 @@ const els = {
   rematchDuel: document.getElementById("rematch-duel"),
   cancelMatch: document.getElementById("cancel-match"),
   duelStatus: document.getElementById("duel-status"),
+  duelLobby: document.getElementById("duel-lobby"),
   duelYou: document.getElementById("duel-you"),
   duelThem: document.getElementById("duel-them"),
   duelRound: document.getElementById("duel-round"),
@@ -67,6 +76,8 @@ const els = {
   duelGrid: document.getElementById("duel-grid"),
   profileName: document.getElementById("profile-name"),
   profileAvatar: document.getElementById("profile-avatar"),
+  levelCard: document.getElementById("level-card"),
+  missions: document.getElementById("missions"),
   totalAnswers: document.getElementById("total-answers"),
   accuracy: document.getElementById("accuracy"),
   avgTime: document.getElementById("avg-time"),
@@ -88,6 +99,7 @@ async function boot() {
   tg?.expand();
   applyTelegramTheme();
   bindEvents();
+  renderSoundToggle();
   try {
     await authenticate();
     els.authPanel.hidden = true;
@@ -118,6 +130,8 @@ function bindEvents() {
     tab.addEventListener("click", () => showView(tab.dataset.view));
   });
   els.gridNext.addEventListener("click", loadGridQuestion);
+  els.soundToggle.addEventListener("click", toggleSound);
+  els.trainingStart.addEventListener("click", startTraining);
   els.dailyStart.addEventListener("click", startDailyChallenge);
   els.categorySelect.addEventListener("change", () => {
     state.category = els.categorySelect.value;
@@ -129,6 +143,7 @@ function bindEvents() {
   els.rematchDuel.addEventListener("click", createRematchDuel);
   els.cancelMatch.addEventListener("click", cancelQuickMatch);
   els.reviewMissed.addEventListener("click", loadMissedReview);
+  els.shareSummary.addEventListener("click", shareSummaryCard);
   els.leaderboardScope.querySelectorAll("button").forEach((button) => {
     button.addEventListener("click", () => {
       state.leaderboardScope = button.dataset.scope;
@@ -206,7 +221,9 @@ async function showView(view) {
     section.classList.toggle("active", !section.hidden);
   });
   if (view !== "grid") stopTimer();
+  if (view === "training") await loadTraining();
   if (view === "daily") await loadDaily();
+  if (view === "duel") await loadDuelLobby();
   if (view === "profile") await loadProfile();
   if (view === "leaderboard") await loadLeaderboard();
 }
@@ -288,7 +305,7 @@ async function answerGrid(choiceId, button) {
       }),
     });
     applyAnswerResult(result, button, els.gridFeedback);
-    if (result.daily_completed) window.setTimeout(loadGridQuestion, 900);
+    window.setTimeout(loadGridQuestion, result.daily_completed ? 900 : result.suspicious ? 1600 : 1050);
   } catch (error) {
     feedback(els.gridFeedback, error.message || "Answer was not saved.", false);
     disableGrid(false);
@@ -320,21 +337,25 @@ function applyAnswerResult(result, button, feedbackEl) {
     button?.classList.add("correct");
     feedback(feedbackEl, `Correct: ${result.correct_answer} +${result.points_awarded}`, true);
     successFeedback();
+    playTone("correct");
     burstConfetti();
   } else if (result.suspicious) {
     button?.classList.add("wrong");
     feedback(feedbackEl, "Too fast to count. Try again at human speed.", false);
     errorFeedback();
+    playTone("wrong");
   } else {
     button?.classList.add("wrong");
     els.shell.classList.add("shake");
     window.setTimeout(() => els.shell.classList.remove("shake"), 240);
     feedback(feedbackEl, `Missed: ${result.correct_answer}`, false);
     errorFeedback();
+    playTone("wrong");
   }
   (result.new_badges || []).forEach(showBadgeToast);
   addAnswerTrail(result);
   if (result.country_name) showCountryInfo(result.country_name);
+  renderMissionToasts(result.missions || []);
 }
 
 function addAnswerTrail(result) {
@@ -391,6 +412,15 @@ async function loadSessionSummary() {
       <div><span>Rank move</span><strong>${rankMoveLabel(summary.rank?.rank)}</strong></div>
       <div><span>Avg time</span><strong>${summary.avg_correct_ms ? `${(summary.avg_correct_ms / 1000).toFixed(1)}s` : "-"}</strong></div>
     `;
+    state.lastShareSummary = {
+      title: "Daily Result",
+      lines: [
+        `Correct: ${summary.correct}/${summary.total}`,
+        `Accuracy: ${summary.accuracy}%`,
+        `Points: ${summary.points}`,
+        `Rank: ${rankLabel(summary.rank?.rank)}`,
+      ],
+    };
     renderMissedList(summary.hardest_missed || []);
   } catch (error) {
     renderError(els.summaryStats, error.message || "Could not load summary.");
@@ -448,6 +478,41 @@ async function loadDaily() {
   } catch (error) {
     renderError(els.dailyLeaders, error.message || "Could not load daily leaderboard.");
   }
+}
+
+async function loadTraining() {
+  els.trainingReview.innerHTML = skeletonRows(4);
+  try {
+    const data = await api("/api/review/missed");
+    renderTrainingPreview(data.items || []);
+  } catch (error) {
+    renderError(els.trainingReview, error.message || "Could not load training queue.");
+  }
+}
+
+function renderTrainingPreview(items) {
+  els.trainingReview.innerHTML = "";
+  if (!items.length) {
+    els.trainingReview.innerHTML = '<div class="empty-state">No missed flags yet. Training will use similar flags first.</div>';
+    return;
+  }
+  items.slice(0, 5).forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "review-row";
+    row.innerHTML = `
+      <img alt="" src="${escapeAttr(item.flag_url)}">
+      <span><strong>${escapeHtml(item.name || item.country_name)}</strong><small>${escapeHtml(item.capital || item.continent || "")}</small></span>
+    `;
+    els.trainingReview.appendChild(row);
+  });
+}
+
+async function startTraining() {
+  state.category = "training";
+  els.categorySelect.value = "training";
+  feedback(els.trainingFeedback, "Training loaded in Quiz.", true);
+  await showView("grid");
+  await loadGridQuestion();
 }
 
 async function startDailyChallenge() {
@@ -564,17 +629,20 @@ function stopMatchPolling() {
 function connectDuel(duelId) {
   closeDuelSocket();
   state.duelId = duelId;
+  loadDuelLobby();
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   const socket = new WebSocket(`${protocol}://${window.location.host}/ws/duel/${duelId}?token=${encodeURIComponent(state.token)}`);
   state.duelSocket = socket;
   socket.addEventListener("open", () => {
     socket.send(JSON.stringify({ type: "ready", at: Date.now() }));
+    loadDuelLobby();
   });
   socket.addEventListener("message", (event) => {
     const data = JSON.parse(event.data);
     if (data.type === "presence") {
       els.startDuel.disabled = data.players < 2;
       feedback(els.duelStatus, `Duel room live: ${data.players} unique player${data.players === 1 ? "" : "s"} connected.`, true);
+      loadDuelLobby();
     }
     if (data.type === "duel_waiting") {
       feedback(els.duelStatus, data.message || "Waiting for another player.", false);
@@ -638,6 +706,14 @@ function renderDuelSummary(data) {
     <div><span>Format</span><strong>${els.duelFormat.value === "bo10" ? "10" : "5"}</strong></div>
   `;
   els.missedFlags.innerHTML = '<div class="empty-state">Use Rematch to run it back with the same format.</div>';
+  state.lastShareSummary = {
+    title: "Duel Result",
+    lines: [
+      `You: ${myScore}`,
+      `Opponent: ${opponentScore}`,
+      `Result: ${!data.winner_id ? "Draw" : Number(data.winner_id) === Number(state.user?.id) ? "Win" : "Loss"}`,
+    ],
+  };
 }
 
 function startDuel() {
@@ -731,6 +807,73 @@ function renderDuelScores(scores = {}) {
   els.duelThem.textContent = opponent ? Number(opponent[1] || 0) : 0;
 }
 
+async function loadDuelLobby() {
+  if (!els.duelLobby) return;
+  if (!state.duelId) {
+    els.duelLobby.innerHTML = `
+      <div class="lobby-meta">
+        <span>${escapeHtml(els.duelFormat.value === "bo10" ? "Best of 10" : "Best of 5")}</span>
+        <span>0 rematches</span>
+        <span>not joined</span>
+      </div>
+      <div class="lobby-players">
+        <div class="lobby-player">
+          <div class="avatar">${initials(state.user?.first_name || state.user?.username || "You")}</div>
+          <div><strong>You</strong><small>Choose Quick duel or Invite</small></div>
+          <span class="player-dot"></span>
+        </div>
+        <div class="lobby-player">
+          <div class="avatar">?</div>
+          <div><strong>Opponent</strong><small>Waiting for room</small></div>
+          <span class="player-dot"></span>
+        </div>
+      </div>
+    `;
+    return;
+  }
+  try {
+    const lobby = await api(`/api/duel/${encodeURIComponent(state.duelId)}/lobby`);
+    renderDuelLobby(lobby);
+  } catch (error) {
+    renderError(els.duelLobby, error.message || "Could not load duel lobby.");
+  }
+}
+
+function renderDuelLobby(lobby) {
+  const connected = new Set((lobby.connected_ids || []).map((id) => String(id)));
+  const players = lobby.players || [];
+  const slots = [
+    players[0] || { username: "Waiting", telegram_id: "creator", level: { title: "Explorer" } },
+    players[1] || { username: "Opponent", telegram_id: "opponent", level: { title: "Invite sent" } },
+  ];
+  const format = els.duelFormat.value === "bo10" ? "Best of 10" : "Best of 5";
+  els.duelLobby.innerHTML = `
+    <div class="lobby-meta">
+      <span>${escapeHtml(format)}</span>
+      <span>${Number(lobby.history_count || 0)} rematches</span>
+      <span>${escapeHtml(lobby.duel?.status || "waiting")}</span>
+    </div>
+    <div class="lobby-players">
+      ${slots
+        .map((player) => {
+          const isConnected = connected.has(String(player.telegram_id));
+          const name = player.username || player.first_name || "Player";
+          return `
+            <div class="lobby-player">
+              <div class="avatar">${initials(name)}</div>
+              <div>
+                <strong>${escapeHtml(name)}</strong>
+                <small>${escapeHtml(player.level?.title || "Explorer")}</small>
+              </div>
+              <span class="player-dot ${isConnected ? "online" : ""}" title="${isConnected ? "Connected" : "Not connected"}"></span>
+            </div>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
 async function loadProfile() {
   renderProfileSkeleton();
   try {
@@ -750,6 +893,8 @@ async function loadProfile() {
     els.bestStreak.textContent = user.max_streak || 0;
     els.correctBar.style.height = `${Math.max(8, correct ? (correct / Math.max(total, 1)) * 100 : 8)}%`;
     els.missedBar.style.height = `${Math.max(8, missed ? (missed / Math.max(total, 1)) * 100 : 8)}%`;
+    renderLevelCard(stats.level || user.level || {});
+    renderMissions(stats.missions || []);
     renderBadges(stats.badges || []);
   } catch (error) {
     renderError(els.badges, error.message || "Could not load profile.");
@@ -757,11 +902,52 @@ async function loadProfile() {
 }
 
 function renderProfileSkeleton() {
+  els.levelCard.innerHTML = '<div class="skeleton line wide"></div><div class="skeleton line"></div>';
+  els.missions.innerHTML = skeletonRows(3);
   els.totalAnswers.textContent = "-";
   els.accuracy.textContent = "-";
   els.avgTime.textContent = "-";
   els.bestStreak.textContent = "-";
   els.badges.innerHTML = `<span class="badge">Loading chart...</span>`;
+}
+
+function renderLevelCard(level) {
+  const xp = Number(level.xp || 0);
+  const floor = Number(level.level_floor || 0);
+  const nextXp = Number(level.next_xp || xp);
+  const span = Math.max(1, nextXp - floor);
+  const pct = level.next_xp ? Math.min(100, Math.round(((xp - floor) / span) * 100)) : 100;
+  els.levelCard.innerHTML = `
+    <div>
+      <span>Level</span>
+      <strong>${escapeHtml(level.title || "Explorer")}</strong>
+      <small>${level.next_title ? `${nextXp - xp} XP to ${escapeHtml(level.next_title)}` : "Top rank reached"}</small>
+    </div>
+    <div class="level-track"><i style="width:${pct}%"></i></div>
+    <b>${xp} XP</b>
+  `;
+}
+
+function renderMissions(missions) {
+  els.missions.innerHTML = "";
+  if (!missions.length) {
+    els.missions.innerHTML = '<div class="empty-state">Missions appear as you play.</div>';
+    return;
+  }
+  missions.forEach((mission) => {
+    const pct = Math.min(100, Math.round((Number(mission.progress || 0) / Math.max(1, Number(mission.target || 1))) * 100));
+    const row = document.createElement("div");
+    row.className = `mission-row${mission.completed ? " completed" : ""}`;
+    row.innerHTML = `
+      <div>
+        <strong>${escapeHtml(mission.title)}</strong>
+        <small>${escapeHtml(mission.description)}</small>
+      </div>
+      <span>${Number(mission.progress || 0)}/${Number(mission.target || 0)}</span>
+      <div class="mission-track"><i style="width:${pct}%"></i></div>
+    `;
+    els.missions.appendChild(row);
+  });
 }
 
 function renderBadges(badges) {
@@ -879,6 +1065,104 @@ function lightFeedback() {
   tg?.HapticFeedback?.impactOccurred("light");
 }
 
+function renderSoundToggle() {
+  els.soundToggle.textContent = state.soundEnabled ? "Sound on" : "Sound off";
+  els.soundToggle.setAttribute("aria-pressed", state.soundEnabled ? "true" : "false");
+}
+
+function toggleSound() {
+  state.soundEnabled = !state.soundEnabled;
+  localStorage.setItem("flag-atlas-sound", state.soundEnabled ? "1" : "0");
+  renderSoundToggle();
+  if (state.soundEnabled) playTone("correct");
+}
+
+function playTone(kind) {
+  if (!state.soundEnabled) return;
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContext) return;
+  const context = state.audioContext || new AudioContext();
+  state.audioContext = context;
+  const now = context.currentTime;
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  oscillator.type = kind === "wrong" ? "square" : "sine";
+  oscillator.frequency.setValueAtTime(kind === "wrong" ? 180 : 520, now);
+  oscillator.frequency.exponentialRampToValueAtTime(kind === "wrong" ? 90 : 760, now + 0.12);
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(0.045, now + 0.012);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+  oscillator.connect(gain).connect(context.destination);
+  oscillator.start(now);
+  oscillator.stop(now + 0.18);
+}
+
+function renderMissionToasts(missions) {
+  missions
+    .filter((mission) => mission.completed)
+    .forEach((mission) => {
+      const key = mission.key || mission.title;
+      if (state.missionToastKeys.has(key)) return;
+      state.missionToastKeys.add(key);
+      showBadgeToast({ icon: "medal", name: `Mission complete: ${mission.title}` });
+    });
+}
+
+function shareSummaryCard() {
+  if (!state.lastShareSummary) {
+    feedback(els.gridFeedback, "Finish a Daily or Duel first, then share the card.", false);
+    return;
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = 900;
+  canvas.height = 520;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#efe4cf";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "rgba(15, 127, 122, 0.16)";
+  ctx.fillRect(0, 0, canvas.width, 96);
+  ctx.fillStyle = "#0f4f4b";
+  ctx.font = "700 34px Georgia, serif";
+  ctx.fillText("Flag Atlas", 54, 62);
+  ctx.font = "700 56px Georgia, serif";
+  ctx.fillText(state.lastShareSummary.title, 54, 170);
+  ctx.font = "700 34px Arial, sans-serif";
+  ctx.fillStyle = "#25312e";
+  state.lastShareSummary.lines.forEach((line, index) => {
+    ctx.fillText(line, 72, 250 + index * 54);
+  });
+  ctx.fillStyle = "#d95f34";
+  ctx.fillRect(54, 432, 792, 10);
+  ctx.font = "700 24px Arial, sans-serif";
+  ctx.fillStyle = "#6a6255";
+  ctx.fillText("Play the next route in Telegram", 54, 484);
+
+  const download = () => {
+    const anchor = document.createElement("a");
+    anchor.download = "flag-atlas-result.png";
+    anchor.href = canvas.toDataURL("image/png");
+    anchor.click();
+  };
+
+  canvas.toBlob(async (blob) => {
+    if (!blob) {
+      download();
+      return;
+    }
+    const file = new File([blob], "flag-atlas-result.png", { type: "image/png" });
+    if (navigator.canShare?.({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: "Flag Atlas result" });
+        return;
+      } catch {
+        download();
+        return;
+      }
+    }
+    download();
+  }, "image/png");
+}
+
 function burstConfetti() {
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   const canvas = els.confetti;
@@ -945,7 +1229,7 @@ function skeletonRows(count) {
 }
 
 function titleFor(view) {
-  return { grid: "Quiz", daily: "Daily", duel: "Duel", profile: "Profile", leaderboard: "Ranks" }[view] || "Flag Atlas";
+  return { grid: "Quiz", training: "Train", daily: "Daily", duel: "Duel", profile: "Profile", leaderboard: "Ranks" }[view] || "Flag Atlas";
 }
 
 function labelForCategory(key) {

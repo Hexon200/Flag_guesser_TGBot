@@ -153,10 +153,13 @@ def create_app() -> FastAPI:
         previous_streak = int(stats_before["streak"] or 0) if stats_before else 0
         suspicious = game_logic.answer_is_suspicious(result["response_ms"])
         scoring = game_logic.score_for_answer(result["correct"] and not suspicious, previous_streak, tier)
+        if suspicious:
+            scoring["xp"] = 0
         new_stats = database.apply_score(
             telegram_id=telegram_id,
             is_correct=result["correct"] and not suspicious,
             points=scoring["points"],
+            xp=scoring["xp"],
             next_streak=scoring["next_streak"],
             username=username,
         )
@@ -201,6 +204,10 @@ def create_app() -> FastAPI:
             "suspicious": suspicious,
             "new_badges": new_badges,
             "daily_completed": daily_completed,
+            "missions": game_logic.mission_progress(
+                new_stats,
+                {"category": session.get("category") or "all", "difficulty": session.get("difficulty") or "medium"},
+            ),
         }
         database.save_answer_receipt(receipt_key, telegram_id, payload.question_id, response)
         return response
@@ -342,6 +349,15 @@ def create_app() -> FastAPI:
         if not duel:
             raise HTTPException(status_code=404, detail="Duel not found")
         return {"duel": duel, "events": database.get_duel_events(duel_id)}
+
+    @app.get("/api/duel/{duel_id}/lobby")
+    async def duel_lobby(duel_id: str, current_user: Annotated[dict, Depends(require_user)]):
+        lobby = database.get_duel_lobby(duel_id)
+        if not lobby:
+            raise HTTPException(status_code=404, detail="Duel not found")
+        connected_ids = list(DUEL_CONNECTIONS.get(duel_id, {}).keys())
+        lobby["connected_ids"] = connected_ids
+        return lobby
 
     @app.websocket("/ws/duel/{duel_id}")
     async def duel_socket(websocket: WebSocket, duel_id: str, token: str | None = Query(None)):
@@ -503,6 +519,9 @@ def create_grid_question(telegram_id: int, choices_count: int, category_key: str
             return daily_complete_response(telegram_id)
         correct = game_logic.daily_country_for_index(answered)
         daily_progress = {"answered": min(answered, game_logic.DAILY_QUESTION_COUNT), "total": game_logic.DAILY_QUESTION_COUNT}
+    elif category_key == "training":
+        correct = choose_training_country(telegram_id, tier)
+        daily_progress = None
     else:
         performance = database.get_user_country_performance(telegram_id)
         correct = game_logic.choose_country(telegram_id, category_key, tier, performance)
@@ -542,6 +561,16 @@ def create_grid_question(telegram_id: int, choices_count: int, category_key: str
     if daily_progress:
         question["daily_progress"] = daily_progress
     return question
+
+
+def choose_training_country(telegram_id: int, tier: game_logic.DifficultyTier) -> dict:
+    missed = database.get_recent_missed_flags(telegram_id, 24)
+    missed_names = [row["country_name"] for row in missed if row.get("country_name")]
+    pool = [country for country in COUNTRIES if country["name"] in missed_names]
+    if len(pool) < max(4, tier.choices // 2):
+        pool.extend(country for country in game_logic.countries_for_category("training") if country not in pool)
+    pool = game_logic.countries_for_tier(pool or list(COUNTRIES), tier)
+    return random.choice(pool)
 
 
 def daily_complete_response(telegram_id: int) -> dict:
