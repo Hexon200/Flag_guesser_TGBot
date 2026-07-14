@@ -15,6 +15,10 @@ const state = {
   timerTotal: 15,
   timerDeadline: 0,
   matchPollId: null,
+  duelSocket: null,
+  duelId: null,
+  duelAnswered: false,
+  duelSelectedButton: null,
 };
 
 const els = {
@@ -40,8 +44,15 @@ const els = {
   matchNew: document.getElementById("match-new"),
   duelFormat: document.getElementById("duel-format"),
   quickMatch: document.getElementById("quick-match"),
+  startDuel: document.getElementById("start-duel"),
   cancelMatch: document.getElementById("cancel-match"),
   duelStatus: document.getElementById("duel-status"),
+  duelYou: document.getElementById("duel-you"),
+  duelThem: document.getElementById("duel-them"),
+  duelRound: document.getElementById("duel-round"),
+  duelRoundLabel: document.getElementById("duel-round-label"),
+  duelPrompt: document.getElementById("duel-prompt"),
+  duelGrid: document.getElementById("duel-grid"),
   profileName: document.getElementById("profile-name"),
   profileAvatar: document.getElementById("profile-avatar"),
   totalAnswers: document.getElementById("total-answers"),
@@ -99,6 +110,7 @@ function bindEvents() {
     loadGridQuestion();
   });
   els.quickMatch.addEventListener("click", joinQuickMatch);
+  els.startDuel.addEventListener("click", startDuel);
   els.cancelMatch.addEventListener("click", cancelQuickMatch);
   els.leaderboardScope.querySelectorAll("button").forEach((button) => {
     button.addEventListener("click", () => {
@@ -291,8 +303,7 @@ function renderCard(card, index) {
   button.style.setProperty("--i", index);
   button.innerHTML = `
     <span class="card-inner">
-      <span class="card-face card-front">?</span>
-      <span class="card-face card-back">${card.kind === "flag" ? `<img alt="Flag card" src="${escapeAttr(card.flag_url)}">` : escapeHtml(card.label)}</span>
+      <span class="card-face card-front">${card.kind === "flag" ? `<img alt="Flag card" src="${escapeAttr(card.flag_url)}">` : escapeHtml(card.label)}</span>
     </span>
   `;
   button.addEventListener("click", () => flipCard(button));
@@ -371,6 +382,8 @@ async function cancelQuickMatch() {
   try {
     await api("/api/matchmaking/quick-match", { method: "DELETE" });
     stopMatchPolling();
+    closeDuelSocket();
+    els.startDuel.disabled = true;
     feedback(els.duelStatus, "Queue cancelled.", true);
   } catch (error) {
     feedback(els.duelStatus, error.message || "Could not cancel queue.", false);
@@ -400,17 +413,107 @@ function stopMatchPolling() {
 }
 
 function connectDuel(duelId) {
+  closeDuelSocket();
+  state.duelId = duelId;
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-  const socket = new WebSocket(`${protocol}://${window.location.host}/ws/duel/${duelId}`);
+  const socket = new WebSocket(`${protocol}://${window.location.host}/ws/duel/${duelId}?token=${encodeURIComponent(state.token)}`);
+  state.duelSocket = socket;
   socket.addEventListener("open", () => {
     socket.send(JSON.stringify({ type: "ready", at: Date.now() }));
   });
   socket.addEventListener("message", (event) => {
     const data = JSON.parse(event.data);
     if (data.type === "presence") {
-      feedback(els.duelStatus, `Duel room live: ${data.players} connected.`, true);
+      els.startDuel.disabled = data.players < 2;
+      feedback(els.duelStatus, `Duel room live: ${data.players} unique player${data.players === 1 ? "" : "s"} connected.`, true);
+    }
+    if (data.type === "duel_waiting") {
+      feedback(els.duelStatus, data.message || "Waiting for another player.", false);
+    }
+    if (data.type === "duel_question") {
+      renderDuelQuestion(data);
+    }
+    if (data.type === "duel_answered") {
+      renderDuelScores(data.scores);
+      if (Number(data.user_id) === Number(state.user?.id) && state.duelSelectedButton) {
+        state.duelSelectedButton.classList.remove("pending");
+        state.duelSelectedButton.classList.add(data.correct ? "correct" : "wrong");
+      }
+      feedback(
+        els.duelStatus,
+        data.correct ? `Answered correctly: ${data.correct_answer}` : `Answer in: ${data.correct_answer}`,
+        data.correct,
+      );
+    }
+    if (data.type === "duel_complete") {
+      renderDuelScores(data.scores);
+      els.startDuel.disabled = false;
+      els.duelRound.hidden = true;
+      const youWon = Number(data.winner_id) === Number(state.user?.id);
+      const tied = !data.winner_id;
+      feedback(els.duelStatus, tied ? "Duel complete: draw." : youWon ? "Duel complete: you won." : "Duel complete: opponent won.", youWon || tied);
     }
   });
+  socket.addEventListener("close", () => {
+    if (state.duelSocket === socket) state.duelSocket = null;
+  });
+}
+
+function closeDuelSocket() {
+  if (state.duelSocket && state.duelSocket.readyState <= WebSocket.OPEN) {
+    state.duelSocket.close();
+  }
+  state.duelSocket = null;
+}
+
+function startDuel() {
+  if (!state.duelSocket || state.duelSocket.readyState !== WebSocket.OPEN) {
+    feedback(els.duelStatus, "Join a duel room first.", false);
+    return;
+  }
+  els.startDuel.disabled = true;
+  state.duelSocket.send(JSON.stringify({ type: "start", format: els.duelFormat.value }));
+}
+
+function renderDuelQuestion(question) {
+  state.duelAnswered = false;
+  state.duelSelectedButton = null;
+  els.duelRound.hidden = false;
+  els.duelRoundLabel.textContent = `Round ${question.round}/${question.total}`;
+  els.duelPrompt.textContent = question.prompt.text;
+  renderDuelScores(question.scores);
+  els.duelGrid.innerHTML = "";
+  question.choices.forEach((choice, index) => {
+    const button = document.createElement("button");
+    button.className = "flag-choice";
+    button.type = "button";
+    button.dataset.choiceId = choice.id;
+    button.style.setProperty("--i", index);
+    button.innerHTML = `<img alt="Duel flag option" src="${escapeAttr(choice.flag_url)}">`;
+    button.addEventListener("click", () => answerDuel(choice.id, button));
+    els.duelGrid.appendChild(button);
+  });
+  feedback(els.duelStatus, "Pick the matching flag before your opponent.", true);
+}
+
+function answerDuel(choiceId, button) {
+  if (state.duelAnswered || !state.duelSocket || state.duelSocket.readyState !== WebSocket.OPEN) return;
+  state.duelAnswered = true;
+  state.duelSelectedButton = button;
+  els.duelGrid.querySelectorAll("button").forEach((node) => {
+    node.disabled = true;
+  });
+  button.classList.add("pending");
+  state.duelSocket.send(JSON.stringify({ type: "answer", choice_id: choiceId }));
+}
+
+function renderDuelScores(scores = {}) {
+  const myId = String(state.user?.id || "");
+  const entries = Object.entries(scores);
+  const myScore = Number(scores[myId] || 0);
+  const opponent = entries.find(([id]) => id !== myId);
+  els.duelYou.textContent = myScore;
+  els.duelThem.textContent = opponent ? Number(opponent[1] || 0) : 0;
 }
 
 async function loadProfile() {

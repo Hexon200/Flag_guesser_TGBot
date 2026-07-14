@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -32,7 +33,8 @@ BASE_DIR = Path(__file__).parent
 TMA_DIR = BASE_DIR / "tma"
 
 RATE_BUCKETS: dict[tuple[int, str], list[float]] = {}
-DUEL_CONNECTIONS: dict[str, set[WebSocket]] = {}
+DUEL_CONNECTIONS: dict[str, dict[int, set[WebSocket]]] = {}
+DUEL_ROOMS: dict[str, dict] = {}
 
 
 class TelegramAuthRequest(BaseModel):
@@ -261,19 +263,24 @@ def create_app() -> FastAPI:
         return {"duel": duel, "events": database.get_duel_events(duel_id)}
 
     @app.websocket("/ws/duel/{duel_id}")
-    async def duel_socket(websocket: WebSocket, duel_id: str):
+    async def duel_socket(websocket: WebSocket, duel_id: str, token: str | None = Query(None)):
+        user = user_from_ws_token(token)
+        telegram_id = int(user["id"])
         await websocket.accept()
-        DUEL_CONNECTIONS.setdefault(duel_id, set()).add(websocket)
+        DUEL_CONNECTIONS.setdefault(duel_id, {}).setdefault(telegram_id, set()).add(websocket)
         try:
-            await broadcast_duel(duel_id, {"type": "presence", "players": len(DUEL_CONNECTIONS[duel_id])})
+            await broadcast_duel_presence(duel_id)
             while True:
                 message = await websocket.receive_json()
-                await broadcast_duel(duel_id, {"type": "event", "payload": message})
+                await handle_duel_message(duel_id, telegram_id, message)
         except WebSocketDisconnect:
             pass
         finally:
-            DUEL_CONNECTIONS.get(duel_id, set()).discard(websocket)
-            await broadcast_duel(duel_id, {"type": "presence", "players": len(DUEL_CONNECTIONS.get(duel_id, set()))})
+            user_sockets = DUEL_CONNECTIONS.get(duel_id, {}).get(telegram_id, set())
+            user_sockets.discard(websocket)
+            if not user_sockets and duel_id in DUEL_CONNECTIONS:
+                DUEL_CONNECTIONS[duel_id].pop(telegram_id, None)
+            await broadcast_duel_presence(duel_id)
 
     return app
 
@@ -331,6 +338,17 @@ def require_user(authorization: Annotated[str | None, Header()] = None) -> dict:
         return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
     except jwt.PyJWTError as exc:
         raise HTTPException(status_code=401, detail="Invalid bearer token") from exc
+
+
+def user_from_ws_token(token: str | None) -> dict:
+    if DEV_AUTH_ENABLED and not token:
+        return {"id": int(os.getenv("TMA_DEV_TELEGRAM_ID", "1000")), "first_name": "Dev Player"}
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing WebSocket token")
+    try:
+        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status_code=401, detail="Invalid WebSocket token") from exc
 
 
 def public_user(user: dict) -> dict:
@@ -553,13 +571,161 @@ def check_rate_limit(telegram_id: int, bucket: str, limit: int, window_seconds: 
     RATE_BUCKETS[key] = entries
 
 
-async def broadcast_duel(duel_id: str, payload: dict):
-    sockets = list(DUEL_CONNECTIONS.get(duel_id, set()))
+async def handle_duel_message(duel_id: str, telegram_id: int, message: dict):
+    message_type = message.get("type")
+    if message_type == "ready":
+        await send_duel_state(duel_id)
+        return
+    if message_type == "start":
+        await start_duel(duel_id, telegram_id, message.get("format", "bo5"))
+        return
+    if message_type == "answer":
+        await answer_duel_question(duel_id, telegram_id, message.get("choice_id"))
+        return
+    await broadcast_duel(duel_id, {"type": "event", "payload": message})
+
+
+async def start_duel(duel_id: str, telegram_id: int, match_format: str):
+    players = list(DUEL_CONNECTIONS.get(duel_id, {}).keys())
+    if len(players) < 2:
+        await send_to_duel_user(duel_id, telegram_id, {"type": "duel_waiting", "message": "Waiting for another player."})
+        return
+    total = 10 if match_format == "bo10" else 5
+    room = {
+        "started": True,
+        "round": 0,
+        "total": total,
+        "players": players[:2],
+        "scores": {str(player_id): 0 for player_id in players[:2]},
+        "answered": set(),
+        "current": None,
+    }
+    DUEL_ROOMS[duel_id] = room
+    database.log_duel_event(duel_id, telegram_id, "started", {"format": match_format, "players": players[:2]})
+    await next_duel_round(duel_id)
+
+
+async def send_duel_state(duel_id: str):
+    await broadcast_duel_presence(duel_id)
+    room = DUEL_ROOMS.get(duel_id)
+    if room and room.get("current"):
+        await broadcast_duel(duel_id, public_duel_question(room))
+
+
+async def next_duel_round(duel_id: str):
+    room = DUEL_ROOMS.get(duel_id)
+    if not room:
+        return
+    room["round"] += 1
+    room["answered"] = set()
+    correct = random.choice(COUNTRIES)
+    wrong = random.sample([country for country in COUNTRIES if country["name"] != correct["name"]], 5)
+    countries = [correct] + wrong
+    random.shuffle(countries)
+    choices = [{"id": uuid.uuid4().hex, "country": country["name"], "flag_url": flag_url(country)} for country in countries]
+    room["current"] = {
+        "prompt": correct["name"],
+        "correct_country": correct["name"],
+        "choices": choices,
+    }
+    database.log_duel_event(duel_id, 0, "round_started", {"round": room["round"], "correct_country": correct["name"]})
+    await broadcast_duel(duel_id, public_duel_question(room))
+
+
+async def answer_duel_question(duel_id: str, telegram_id: int, choice_id: str | None):
+    room = DUEL_ROOMS.get(duel_id)
+    if not room or not room.get("current"):
+        await send_to_duel_user(duel_id, telegram_id, {"type": "duel_waiting", "message": "Start the duel first."})
+        return
+    if telegram_id in room["answered"]:
+        return
+    selected = next((choice for choice in room["current"]["choices"] if choice["id"] == choice_id), None)
+    is_correct = bool(selected and selected["country"] == room["current"]["correct_country"])
+    if is_correct:
+        room["scores"][str(telegram_id)] = int(room["scores"].get(str(telegram_id), 0)) + 1
+    room["answered"].add(telegram_id)
+    database.log_duel_event(
+        duel_id,
+        telegram_id,
+        "answered",
+        {
+            "round": room["round"],
+            "selected_country": selected["country"] if selected else None,
+            "correct": is_correct,
+            "score": room["scores"].get(str(telegram_id), 0),
+        },
+    )
+    await broadcast_duel(
+        duel_id,
+        {
+            "type": "duel_answered",
+            "user_id": telegram_id,
+            "correct": is_correct,
+            "correct_answer": room["current"]["correct_country"],
+            "scores": room["scores"],
+        },
+    )
+    if len(room["answered"]) >= len(room["players"]):
+        await asyncio.sleep(1.1)
+        if room["round"] >= room["total"]:
+            await complete_duel(duel_id)
+        else:
+            await next_duel_round(duel_id)
+
+
+async def complete_duel(duel_id: str):
+    room = DUEL_ROOMS.get(duel_id)
+    if not room:
+        return
+    scores = room["scores"]
+    winner_id = None
+    if len(scores) >= 2:
+        ordered = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+        if ordered[0][1] != ordered[1][1]:
+            winner_id = int(ordered[0][0])
+    database.log_duel_event(duel_id, winner_id or 0, "completed", {"scores": scores, "winner_id": winner_id})
+    await broadcast_duel(duel_id, {"type": "duel_complete", "scores": scores, "winner_id": winner_id})
+    DUEL_ROOMS.pop(duel_id, None)
+
+
+def public_duel_question(room: dict) -> dict:
+    current = room["current"]
+    return {
+        "type": "duel_question",
+        "round": room["round"],
+        "total": room["total"],
+        "prompt": {"type": "country_name", "text": current["prompt"]},
+        "choices": [{"id": choice["id"], "flag_url": choice["flag_url"]} for choice in current["choices"]],
+        "scores": room["scores"],
+    }
+
+
+async def broadcast_duel_presence(duel_id: str):
+    players = list(DUEL_CONNECTIONS.get(duel_id, {}).keys())
+    await broadcast_duel(duel_id, {"type": "presence", "players": len(players), "player_ids": players})
+
+
+async def send_to_duel_user(duel_id: str, telegram_id: int, payload: dict):
+    sockets = list(DUEL_CONNECTIONS.get(duel_id, {}).get(telegram_id, set()))
     for socket in sockets:
         try:
             await socket.send_json(payload)
         except RuntimeError:
-            DUEL_CONNECTIONS.get(duel_id, set()).discard(socket)
+            DUEL_CONNECTIONS.get(duel_id, {}).get(telegram_id, set()).discard(socket)
+
+
+async def broadcast_duel(duel_id: str, payload: dict):
+    sockets = [
+        socket
+        for user_sockets in DUEL_CONNECTIONS.get(duel_id, {}).values()
+        for socket in user_sockets
+    ]
+    for socket in sockets:
+        try:
+            await socket.send_json(payload)
+        except RuntimeError:
+            for user_sockets in DUEL_CONNECTIONS.get(duel_id, {}).values():
+                user_sockets.discard(socket)
 
 
 app = create_app()
