@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>Flag Atlas</title>
-    <link rel="stylesheet" href="/tma/design-tokens.css?v=2.6">
-    <link rel="stylesheet" href="/tma/styles.css?v=2.6">
+    <link rel="stylesheet" href="/tma/design-tokens.css?v=2.7">
+    <link rel="stylesheet" href="/tma/styles.css?v=2.7">
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
@@ -64,7 +64,6 @@
         </div>
         <div id="flag-grid" class="flag-grid"></div>
         <p id="grid-feedback" class="feedback" aria-live="polite"></p>
-        <div id="answer-trail" class="answer-trail" aria-label="Recent answers"></div>
         <div id="country-card" class="country-card" hidden></div>
         <div id="session-summary" class="summary-panel" hidden>
           <div class="prompt-row">
@@ -160,6 +159,7 @@
           </div>
         </div>
         <div id="level-card" class="level-card"></div>
+        <h3>Quests</h3>
         <div id="missions" class="mission-list"></div>
         <div class="stat-grid">
           <div><span>Total answers</span><strong id="total-answers">0</strong></div>
@@ -195,6 +195,6 @@
 
     <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
     <canvas id="confetti-canvas" aria-hidden="true"></canvas>
-    <script type="module" src="/tma/app.js?v=2.6"></script>
+    <script type="module" src="/tma/app.js?v=2.7"></script>
   </body>
 </html>

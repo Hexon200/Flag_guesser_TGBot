@@ -68,10 +68,17 @@ MIN_PLAUSIBLE_RESPONSE_MS = 150
 
 LEVELS = [
     (0, "Explorer"),
-    (150, "Cartographer"),
-    (450, "Ambassador"),
-    (900, "Globe Master"),
-    (1600, "Atlas Legend"),
+    (120, "Trail Scout"),
+    (300, "Map Reader"),
+    (600, "Cartographer"),
+    (1000, "Harbor Guide"),
+    (1500, "Border Expert"),
+    (2200, "Cultural Envoy"),
+    (3100, "Ambassador"),
+    (4300, "World Navigator"),
+    (5800, "Globe Master"),
+    (7600, "Atlas Legend"),
+    (10000, "Flag Grandmaster"),
 ]
 
 BADGE_RULES = [
@@ -223,7 +230,29 @@ def mission_progress(stats: dict[str, Any], session_context: dict[str, Any] | No
     session_context = session_context or {}
     streak = int(stats.get("streak", 0) or 0)
     max_streak = int(stats.get("max_streak", 0) or 0)
+    xp = int(stats.get("xp", 0) or 0)
+    score = int(stats.get("score", 0) or 0)
+    total_answers = int(stats.get("total_answers", 0) or 0)
+    correct_answers = int(stats.get("correct_answers", 0) or 0)
+    duel_wins = int(stats.get("wins", 0) or 0)
+    accuracy = round((correct_answers / total_answers) * 100) if total_answers else 0
     return [
+        {
+            "key": "first_25",
+            "title": "First Expedition",
+            "description": "Answer 25 quiz questions.",
+            "progress": min(total_answers, 25),
+            "target": 25,
+            "completed": total_answers >= 25,
+        },
+        {
+            "key": "century_route",
+            "title": "Century Route",
+            "description": "Answer 100 quiz questions.",
+            "progress": min(total_answers, 100),
+            "target": 100,
+            "completed": total_answers >= 100,
+        },
         {
             "key": "europe_streak_10",
             "title": "Europe Run",
@@ -241,12 +270,44 @@ def mission_progress(stats: dict[str, Any], session_context: dict[str, Any] | No
             "completed": session_context.get("difficulty") == "hard" and streak >= 5,
         },
         {
+            "key": "sharp_eye_80",
+            "title": "Sharp Eye",
+            "description": "Reach 80% accuracy after 50+ answers.",
+            "progress": min(accuracy if total_answers >= 50 else 0, 80),
+            "target": 80,
+            "completed": total_answers >= 50 and accuracy >= 80,
+        },
+        {
             "key": "streak_20",
             "title": "Long Haul",
             "description": "Reach a 20-answer streak.",
             "progress": min(max_streak, 20),
             "target": 20,
             "completed": max_streak >= 20,
+        },
+        {
+            "key": "score_1000",
+            "title": "Point Climber",
+            "description": "Reach 1,000 total points.",
+            "progress": min(score, 1000),
+            "target": 1000,
+            "completed": score >= 1000,
+        },
+        {
+            "key": "xp_2200",
+            "title": "Border Expert",
+            "description": "Earn 2,200 XP.",
+            "progress": min(xp, 2200),
+            "target": 2200,
+            "completed": xp >= 2200,
+        },
+        {
+            "key": "duel_wins_5",
+            "title": "Duel Regular",
+            "description": "Win 5 completed duels.",
+            "progress": min(duel_wins, 5),
+            "target": 5,
+            "completed": duel_wins >= 5,
         },
     ]
 

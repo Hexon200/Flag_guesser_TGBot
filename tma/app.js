@@ -8,7 +8,6 @@ const state = {
   leaderboardScope: "global",
   gameOptions: null,
   gridQuestion: null,
-  answerTrail: [],
   timerId: null,
   timerTotal: 15,
   timerDeadline: 0,
@@ -39,7 +38,6 @@ const els = {
   promptFlag: document.getElementById("prompt-flag"),
   flagGrid: document.getElementById("flag-grid"),
   gridFeedback: document.getElementById("grid-feedback"),
-  answerTrail: document.getElementById("answer-trail"),
   gridNext: document.getElementById("grid-next"),
   timerProgress: document.getElementById("timer-progress"),
   timerText: document.getElementById("timer-text"),
@@ -230,7 +228,6 @@ async function showView(view) {
 
 async function loadGridQuestion() {
   stopTimer();
-  els.countryCard.hidden = true;
   els.flagGrid.innerHTML = skeletonChoices(6);
   els.promptFlag.hidden = true;
   try {
@@ -353,47 +350,39 @@ function applyAnswerResult(result, button, feedbackEl) {
     playTone("wrong");
   }
   (result.new_badges || []).forEach(showBadgeToast);
-  addAnswerTrail(result);
-  if (result.country_name) showCountryInfo(result.country_name);
+  if (result.country_name) showCountryInfo(result.country_name, result);
   renderMissionToasts(result.missions || []);
 }
 
-function addAnswerTrail(result) {
-  const item = {
-    good: result.correct && !result.suspicious,
-    text: result.suspicious ? "Too fast" : result.correct ? result.correct_answer : `Missed: ${result.correct_answer}`,
-  };
-  state.answerTrail = [item, ...state.answerTrail].slice(0, 5);
-  renderAnswerTrail();
-}
-
-function renderAnswerTrail() {
-  els.answerTrail.innerHTML = state.answerTrail
-    .map((item) => `<span class="${item.good ? "good" : "bad"}">${escapeHtml(item.text)}</span>`)
-    .join("");
-}
-
-async function showCountryInfo(countryName) {
+async function showCountryInfo(countryName, result = null) {
   try {
     const info = await api(`/api/country/${encodeURIComponent(countryName)}`);
-    els.countryCard.innerHTML = countryInfoMarkup(info);
+    els.countryCard.innerHTML = countryInfoMarkup(info, result);
     els.countryCard.hidden = false;
   } catch {
-    els.countryCard.hidden = true;
+    if (!els.countryCard.innerHTML.trim()) els.countryCard.hidden = true;
   }
 }
 
-function countryInfoMarkup(info) {
+function countryInfoMarkup(info, result = null) {
   const similar = (info.similar || [])
     .slice(0, 4)
     .map((item) => `<span><img alt="" src="${escapeAttr(item.flag_url)}">${escapeHtml(item.name)}</span>`)
     .join("");
+  const reviewState = result?.suspicious
+    ? "Too fast"
+    : result
+      ? result.correct
+        ? "Correct answer"
+        : "Review missed flag"
+      : "Last answer review";
   return `
     <img class="country-card-flag" alt="Flag of ${escapeAttr(info.name)}" src="${escapeAttr(info.flag_url)}">
     <div>
-      <p class="eyebrow">${escapeHtml(info.continent)}</p>
+      <p class="eyebrow">${escapeHtml(reviewState)}</p>
       <h3>${escapeHtml(info.name)}</h3>
       <p>Capital: <strong>${escapeHtml(info.capital)}</strong></p>
+      <p>Continent: <strong>${escapeHtml(info.continent)}</strong></p>
       ${similar ? `<div class="similar-flags">${similar}</div>` : ""}
     </div>
   `;

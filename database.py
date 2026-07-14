@@ -384,13 +384,16 @@ def get_profile_stats(telegram_id: int):
             (telegram_id,),
         ).fetchall()
         user_dict = dict(user) if user else None
+        answer_dict = dict(totals)
+        duel_dict = dict(duel_totals)
+        quest_stats = {**(user_dict or {}), **answer_dict, **duel_dict}
         level = game_logic.level_for_xp(int(user_dict.get("xp") or 0)) if user_dict else game_logic.level_for_xp(0)
         return {
             "user": user_dict,
             "level": level,
-            "missions": game_logic.mission_progress(user_dict or {}),
-            "answers": dict(totals),
-            "duels": dict(duel_totals),
+            "missions": game_logic.mission_progress(quest_stats),
+            "answers": answer_dict,
+            "duels": duel_dict,
             "badges": [dict(row) for row in badges],
         }
 
