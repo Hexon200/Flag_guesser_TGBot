@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "flasgs_bot.sqlite3"
+MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
@@ -39,6 +40,15 @@ def init_db():
             conn.execute("ALTER TABLE challenges ADD COLUMN quiz_type TEXT DEFAULT 'flag'")
         except sqlite3.OperationalError:
             pass
+        conn.commit()
+    run_migrations()
+
+def run_migrations():
+    if not MIGRATIONS_DIR.exists():
+        return
+    with get_db_connection() as conn:
+        for migration in sorted(MIGRATIONS_DIR.glob("*.sql")):
+            conn.executescript(migration.read_text(encoding="utf-8"))
         conn.commit()
 
 def ensure_user(telegram_id: int, username: str):
@@ -129,5 +139,213 @@ def update_challenge_opponent_score(challenge_id: str, score: int):
         conn.execute(
             "UPDATE challenges SET opponent_score = ? WHERE challenge_id = ?",
             (score, challenge_id)
+        )
+        conn.commit()
+
+def create_question_session(
+    question_id: str,
+    telegram_id: int,
+    mode: str,
+    prompt: str,
+    correct_country: str,
+    choices: list,
+):
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO tma_question_sessions
+                (question_id, telegram_id, mode, prompt, correct_country, choices_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (question_id, telegram_id, mode, prompt, correct_country, json.dumps(choices)),
+        )
+        conn.commit()
+
+def get_question_session(question_id: str, telegram_id: int):
+    with get_db_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM tma_question_sessions
+            WHERE question_id = ? AND telegram_id = ?
+            """,
+            (question_id, telegram_id),
+        ).fetchone()
+        if not row:
+            return None
+        res = dict(row)
+        res["choices"] = json.loads(res["choices_json"])
+        return res
+
+def mark_question_answered(question_id: str, telegram_id: int):
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            UPDATE tma_question_sessions
+            SET answered_at = CURRENT_TIMESTAMP
+            WHERE question_id = ? AND telegram_id = ?
+            """,
+            (question_id, telegram_id),
+        )
+        conn.commit()
+
+def log_quiz_answer(
+    telegram_id: int,
+    username: str,
+    mode: str,
+    question_id: str,
+    prompt: str,
+    selected_answer: str,
+    correct_answer: str,
+    is_correct: bool,
+    response_ms: int | None,
+):
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO quiz_answers_log
+                (telegram_id, username, mode, question_id, prompt, selected_answer,
+                 correct_answer, is_correct, response_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                telegram_id,
+                username,
+                mode,
+                question_id,
+                prompt,
+                selected_answer,
+                correct_answer,
+                1 if is_correct else 0,
+                response_ms,
+            ),
+        )
+        conn.commit()
+
+def get_profile_stats(telegram_id: int):
+    with get_db_connection() as conn:
+        user = conn.execute(
+            """
+            SELECT telegram_id, username, score, streak, max_streak
+            FROM users
+            WHERE telegram_id = ?
+            """,
+            (telegram_id,),
+        ).fetchone()
+        totals = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS total_answers,
+                COALESCE(SUM(is_correct), 0) AS correct_answers,
+                AVG(CASE WHEN is_correct = 1 THEN response_ms END) AS avg_correct_ms
+            FROM quiz_answers_log
+            WHERE telegram_id = ?
+            """,
+            (telegram_id,),
+        ).fetchone()
+        duel_totals = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS completed_duels,
+                COALESCE(SUM(CASE
+                    WHEN (creator_id = ? AND creator_score > opponent_score)
+                      OR (opponent_id = ? AND opponent_score > creator_score)
+                    THEN 1 ELSE 0 END), 0) AS wins,
+                COALESCE(SUM(CASE
+                    WHEN (creator_id = ? AND creator_score < opponent_score)
+                      OR (opponent_id = ? AND opponent_score < creator_score)
+                    THEN 1 ELSE 0 END), 0) AS losses
+            FROM duel_sessions
+            WHERE status = 'completed' AND (creator_id = ? OR opponent_id = ?)
+            """,
+            (telegram_id, telegram_id, telegram_id, telegram_id, telegram_id, telegram_id),
+        ).fetchone()
+        badges = conn.execute(
+            """
+            SELECT b.badge_id, b.name, b.description, ub.unlocked_at
+            FROM user_badges ub
+            JOIN badges b ON b.badge_id = ub.badge_id
+            WHERE ub.telegram_id = ?
+            ORDER BY ub.unlocked_at DESC
+            """,
+            (telegram_id,),
+        ).fetchall()
+        return {
+            "user": dict(user) if user else None,
+            "answers": dict(totals),
+            "duels": dict(duel_totals),
+            "badges": [dict(row) for row in badges],
+        }
+
+def get_leaderboard_with_ranks(limit: int = 10):
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT telegram_id, username, score, streak, max_streak,
+                   RANK() OVER (ORDER BY score DESC, max_streak DESC, telegram_id ASC) AS rank
+            FROM users
+            ORDER BY score DESC, max_streak DESC, telegram_id ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+def get_user_rank_window(telegram_id: int, radius: int = 2):
+    with get_db_connection() as conn:
+        ranked = conn.execute(
+            """
+            WITH ranked AS (
+                SELECT telegram_id, username, score, streak, max_streak,
+                       RANK() OVER (ORDER BY score DESC, max_streak DESC, telegram_id ASC) AS rank
+                FROM users
+            ),
+            me AS (
+                SELECT rank FROM ranked WHERE telegram_id = ?
+            )
+            SELECT ranked.*
+            FROM ranked, me
+            WHERE ranked.rank BETWEEN me.rank - ? AND me.rank + ?
+            ORDER BY ranked.rank ASC
+            """,
+            (telegram_id, radius, radius),
+        ).fetchall()
+        return [dict(row) for row in ranked]
+
+def create_duel_session(duel_id: str, creator_id: int, challenge_id: str | None = None):
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO duel_sessions (duel_id, challenge_id, creator_id)
+            VALUES (?, ?, ?)
+            """,
+            (duel_id, challenge_id, creator_id),
+        )
+        conn.commit()
+
+def join_duel_session(duel_id: str, opponent_id: int):
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            UPDATE duel_sessions
+            SET opponent_id = ?, status = 'ready'
+            WHERE duel_id = ? AND opponent_id IS NULL
+            """,
+            (opponent_id, duel_id),
+        )
+        conn.commit()
+
+def get_duel_session(duel_id: str):
+    with get_db_connection() as conn:
+        row = conn.execute("SELECT * FROM duel_sessions WHERE duel_id = ?", (duel_id,)).fetchone()
+        return dict(row) if row else None
+
+def log_duel_event(duel_id: str, telegram_id: int, event_type: str, payload: dict):
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO duel_events (duel_id, telegram_id, event_type, payload_json)
+            VALUES (?, ?, ?, ?)
+            """,
+            (duel_id, telegram_id, event_type, json.dumps(payload)),
         )
         conn.commit()

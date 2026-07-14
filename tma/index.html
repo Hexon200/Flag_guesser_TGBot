@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Flag Rush</title>
+    <link rel="stylesheet" href="/tma/styles.css">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Flag Rush</p>
+          <h1 id="screen-title">Grid</h1>
+        </div>
+        <div class="score-pill">
+          <span>Score</span>
+          <strong id="score-value">0</strong>
+        </div>
+      </section>
+
+      <nav class="tabs" aria-label="Game sections">
+        <button class="tab active" data-view="grid" type="button">Grid</button>
+        <button class="tab" data-view="match" type="button">Match</button>
+        <button class="tab" data-view="profile" type="button">Profile</button>
+        <button class="tab" data-view="leaderboard" type="button">Ranks</button>
+      </nav>
+
+      <section id="auth-panel" class="status-panel">
+        <div class="loader"></div>
+        <p>Opening game session...</p>
+      </section>
+
+      <section id="grid-view" class="view active" hidden>
+        <div class="prompt-row">
+          <div>
+            <p class="eyebrow">Find this country</p>
+            <h2 id="grid-prompt">Loading...</h2>
+          </div>
+          <button id="grid-next" class="icon-button" type="button" title="Next question">Next</button>
+        </div>
+        <div id="timer-ring" class="timer-ring" aria-label="Hard mode timer">
+          <span id="timer-text">15</span>
+        </div>
+        <div id="flag-grid" class="flag-grid"></div>
+        <p id="grid-feedback" class="feedback" aria-live="polite"></p>
+      </section>
+
+      <section id="match-view" class="view" hidden>
+        <div class="prompt-row">
+          <div>
+            <p class="eyebrow">Memory mode</p>
+            <h2>Match flags and names</h2>
+          </div>
+          <button id="match-new" class="icon-button" type="button" title="New deck">New</button>
+        </div>
+        <div id="match-board" class="match-board"></div>
+        <p id="match-feedback" class="feedback" aria-live="polite"></p>
+      </section>
+
+      <section id="profile-view" class="view" hidden>
+        <div class="panel">
+          <h2 id="profile-name">Profile</h2>
+          <div class="stat-grid">
+            <div><span>Total answers</span><strong id="total-answers">0</strong></div>
+            <div><span>Accuracy</span><strong id="accuracy">0%</strong></div>
+            <div><span>Avg time</span><strong id="avg-time">-</strong></div>
+            <div><span>Best streak</span><strong id="best-streak">0</strong></div>
+          </div>
+          <div class="chart-wrap">
+            <div class="bar correct" id="correct-bar"></div>
+            <div class="bar missed" id="missed-bar"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>Badges</h3>
+          <div id="badges" class="badges"></div>
+        </div>
+      </section>
+
+      <section id="leaderboard-view" class="view" hidden>
+        <div class="panel">
+          <h2>Leaderboard</h2>
+          <div id="leaders" class="leader-list"></div>
+        </div>
+        <div class="panel">
+          <h3>You are here</h3>
+          <div id="rank-window" class="leader-list compact"></div>
+        </div>
+      </section>
+    </main>
+    <canvas id="confetti-canvas" aria-hidden="true"></canvas>
+    <script type="module" src="/tma/app.js"></script>
+  </body>
+</html>

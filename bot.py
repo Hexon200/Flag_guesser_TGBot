@@ -6,7 +6,8 @@ import random
 import html
 import uuid
 import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import threading
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonWebApp, WebAppInfo
 from telegram.constants import ParseMode
 from telegram.request import HTTPXRequest
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
@@ -23,6 +24,20 @@ logger = logging.getLogger(__name__)
 
 # Fetch Telegram Bot Token from environment variables
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TMA_PUBLIC_URL = os.getenv("TMA_PUBLIC_URL", "").rstrip("/")
+
+
+def mini_app_url(path: str = "") -> str:
+    if not TMA_PUBLIC_URL:
+        return ""
+    return f"{TMA_PUBLIC_URL}{path}"
+
+
+def mini_app_button(text: str, path: str = ""):
+    url = mini_app_url(path)
+    if not url:
+        return None
+    return InlineKeyboardButton(text, web_app=WebAppInfo(url=url))
 
 
 def clear_quiz_session(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -70,6 +85,7 @@ async def show_welcome_menu(update_or_query, context: ContextTypes.DEFAULT_TYPE)
         "/quiz - Start the Flag Guessing Quiz! 🚩\n"
         "/capital - Start the Capital Guessing Quiz! 🏙️\n"
         "/challenge - Challenge a friend to a 10-flag quiz ⚔️\n"
+        "/play - Open the Telegram Mini App\n"
         "/stop - Stop the current quiz and return here ⛔️\n"
         "/stats - Check your score and streak\n"
         "/leaderboard - See top players"
@@ -81,6 +97,9 @@ async def show_welcome_menu(update_or_query, context: ContextTypes.DEFAULT_TYPE)
         [InlineKeyboardButton("🏙️ Guess the Capital! 🏙️", callback_data="start_capital")],
         [InlineKeyboardButton("⚔️ Challenge a Friend ⚔️", callback_data="start_challenge")]
     ]
+    play_button = mini_app_button("Play Mini App")
+    if play_button:
+        keyboard.insert(0, [play_button])
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     if message_target:
@@ -185,6 +204,7 @@ async def schedule_timeout(chat_id: int, message_id: int, token: int, user_data_
                 "/quiz - Start the Flag Guessing Quiz! 🚩\n"
                 "/capital - Start the Capital Guessing Quiz! 🏙️\n"
                 "/challenge - Challenge a friend to a 10-flag quiz ⚔️\n"
+                "/play - Open the Telegram Mini App\n"
                 "/stats - Check your score and streak\n"
                 "/leaderboard - See top players"
             )
@@ -193,6 +213,9 @@ async def schedule_timeout(chat_id: int, message_id: int, token: int, user_data_
                 [InlineKeyboardButton("🏙️ Guess the Capital! 🏙️", callback_data="start_capital")],
                 [InlineKeyboardButton("⚔️ Challenge a Friend ⚔️", callback_data="start_challenge")]
             ]
+            play_button = mini_app_button("Play Mini App")
+            if play_button:
+                keyboard.insert(0, [play_button])
             reply_markup = InlineKeyboardMarkup(keyboard)
             try:
                 await bot.send_message(chat_id=chat_id, text=welcome_text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
@@ -530,6 +553,9 @@ async def select_challenge_continent(update: Update, context: ContextTypes.DEFAU
         [InlineKeyboardButton("🎮 Start Challenge Quiz", callback_data=f"play_challenge:{challenge_id}")],
         [InlineKeyboardButton("📢 Share Link", url=f"https://t.me/share/url?url={share_link}&text=Let's%20play%20a%20Flag%20Guessing%20Challenge!")]
     ]
+    tma_challenge_button = mini_app_button("Open in Mini App", f"?challenge={challenge_id}")
+    if tma_challenge_button:
+        keyboard.insert(0, [tma_challenge_button])
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await query.delete_message()
@@ -798,6 +824,24 @@ async def quiz_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await show_difficulty_menu(update, context, game_mode="flag")
 
 
+async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Open the Telegram Mini App."""
+    user = update.effective_user
+    database.ensure_user(user.id, user.username or user.first_name)
+
+    play_button = mini_app_button("Open Flag Rush")
+    if not play_button:
+        await update.message.reply_text(
+            "The Mini App is installed in the backend, but TMA_PUBLIC_URL is not configured yet."
+        )
+        return
+
+    await update.message.reply_text(
+        "Open the richer Flag Rush Mini App:",
+        reply_markup=InlineKeyboardMarkup([[play_button]]),
+    )
+
+
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /stop command to manually abort the current quiz."""
     clear_quiz_session(context)
@@ -976,7 +1020,42 @@ async def start_capital_callback(update: Update, context: ContextTypes.DEFAULT_T
 
 async def fallback_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle non-command text inputs by guiding users to commands."""
-    await update.message.reply_text("Please use buttons or commands like /quiz, /capital, /challenge, /stats, or /leaderboard to play!")
+    await update.message.reply_text("Please use buttons or commands like /play, /quiz, /capital, /challenge, /stats, or /leaderboard to play!")
+
+
+async def configure_tma_menu(application: Application) -> None:
+    """Configure Telegram's chat menu button when a public Mini App URL is available."""
+    if not TMA_PUBLIC_URL:
+        logger.info("TMA_PUBLIC_URL not set; skipping Telegram menu button setup.")
+        return
+    try:
+        await application.bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(
+                text="Play",
+                web_app=WebAppInfo(url=TMA_PUBLIC_URL),
+            )
+        )
+        logger.info("Telegram Mini App menu button configured.")
+    except Exception as e:
+        logger.error(f"Failed to configure Telegram menu button: {e}")
+
+
+def start_api_server() -> None:
+    """Start the FastAPI server in a sibling thread for single-process deployment."""
+    if os.getenv("ENABLE_TMA_API", "1") == "0":
+        logger.info("TMA API disabled by ENABLE_TMA_API=0.")
+        return
+
+    def run_server():
+        import uvicorn
+
+        host = os.getenv("TMA_HOST", "127.0.0.1")
+        port = int(os.getenv("TMA_PORT", "8000"))
+        uvicorn.run("api:app", host=host, port=port, log_level=os.getenv("TMA_LOG_LEVEL", "info"))
+
+    thread = threading.Thread(target=run_server, name="tma-api", daemon=True)
+    thread.start()
+    logger.info("TMA API server starting in background thread.")
 
 
 def main() -> None:
@@ -989,10 +1068,12 @@ def main() -> None:
     
     # Configure longer connection timeouts for serverless/cloud environments
     request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0, write_timeout=30.0)
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).request(request).build()
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).request(request).post_init(configure_tma_menu).build()
+    start_api_server()
     
     # Register command handlers
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("play", play_command))
     app.add_handler(CommandHandler("quiz", quiz_command))
     app.add_handler(CommandHandler("challenge", challenge_command))
     app.add_handler(CommandHandler("capital", capital_command))
