@@ -513,6 +513,7 @@ def enrich_missed_row(row: dict) -> dict:
 
 def create_grid_question(telegram_id: int, choices_count: int, category_key: str = "all", difficulty: str = "medium") -> dict:
     tier = game_logic.tier_for(difficulty)
+    recent_names = set(database.get_recent_question_countries(telegram_id, category_key, tier.key, recent_limit_for(category_key, tier)))
     if category_key == "daily":
         answered = database.get_daily_answer_count(telegram_id, date.today().isoformat())
         if answered >= game_logic.DAILY_QUESTION_COUNT:
@@ -520,14 +521,14 @@ def create_grid_question(telegram_id: int, choices_count: int, category_key: str
         correct = game_logic.daily_country_for_index(answered)
         daily_progress = {"answered": min(answered, game_logic.DAILY_QUESTION_COUNT), "total": game_logic.DAILY_QUESTION_COUNT}
     elif category_key == "training":
-        correct = choose_training_country(telegram_id, tier)
+        correct = choose_training_country(telegram_id, tier, recent_names)
         daily_progress = None
     else:
         performance = database.get_user_country_performance(telegram_id)
-        correct = game_logic.choose_country(telegram_id, category_key, tier, performance)
+        correct = game_logic.choose_country(telegram_id, category_key, tier, performance, recent_names)
         daily_progress = None
     question_kind = "capital" if category_key == "capitals" else "country"
-    wrong = game_logic.make_wrong_choices(correct, category_key, min(choices_count, tier.choices))
+    wrong = game_logic.make_wrong_choices(correct, category_key, min(choices_count, tier.choices), recent_names)
     countries = [correct] + wrong
     random.shuffle(countries)
     choices = [make_choice(country, question_kind) for country in countries]
@@ -563,14 +564,29 @@ def create_grid_question(telegram_id: int, choices_count: int, category_key: str
     return question
 
 
-def choose_training_country(telegram_id: int, tier: game_logic.DifficultyTier) -> dict:
+def recent_limit_for(category_key: str, tier: game_logic.DifficultyTier) -> int:
+    if category_key == "daily":
+        return 0
+    if category_key == "training":
+        return 6
+    if category_key == "similar":
+        return 8
+    if tier.key == "easy":
+        return 8
+    if category_key.startswith("continent:"):
+        return 6
+    return 12
+
+
+def choose_training_country(telegram_id: int, tier: game_logic.DifficultyTier, excluded_names: set[str] | None = None) -> dict:
     missed = database.get_recent_missed_flags(telegram_id, 24)
     missed_names = [row["country_name"] for row in missed if row.get("country_name")]
     pool = [country for country in COUNTRIES if country["name"] in missed_names]
     if len(pool) < max(4, tier.choices // 2):
         pool.extend(country for country in game_logic.countries_for_category("training") if country not in pool)
     pool = game_logic.countries_for_tier(pool or list(COUNTRIES), tier)
-    return random.choice(pool)
+    available = game_logic.without_excluded(pool, excluded_names)
+    return random.choice(available)
 
 
 def daily_complete_response(telegram_id: int) -> dict:

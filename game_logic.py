@@ -134,16 +134,20 @@ def choose_country(
     category_key: str,
     tier: DifficultyTier,
     performance: dict[str, dict[str, int]],
+    excluded_names: set[str] | None = None,
 ) -> dict[str, Any]:
     pool = countries_for_tier(countries_for_category(category_key), tier)
     if not pool:
         pool = list(COUNTRIES)
+    pick_pool = without_excluded(pool, excluded_names)
+    if not pick_pool:
+        pick_pool = pool
 
     if not performance:
-        return random.choice(pool)
+        return random.choice(pick_pool)
 
     weights = []
-    for country in pool:
+    for country in pick_pool:
         stats = performance.get(country["name"], {})
         attempts = int(stats.get("attempts", 0))
         misses = int(stats.get("misses", 0))
@@ -153,23 +157,35 @@ def choose_country(
             miss_rate = misses / max(attempts, 1)
             weight = 1 + (miss_rate * 5) + min(misses, 10) * 0.18
         weights.append(weight)
-    return random.choices(pool, weights=weights, k=1)[0]
+    return random.choices(pick_pool, weights=weights, k=1)[0]
 
 
 def make_wrong_choices(
     correct: dict[str, Any],
     category_key: str,
     choices_count: int,
+    excluded_names: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     pool = countries_for_category(category_key)
     if category_key == "similar":
         group = next((group for group in SIMILAR_FLAG_GROUPS if correct["name"] in group), None)
         if group:
             pool = [country for country in COUNTRIES if country["name"] in group]
-    wrong_pool = [country for country in pool if country["name"] != correct["name"]]
+    wrong_pool = [
+        country
+        for country in without_excluded(pool, excluded_names)
+        if country["name"] != correct["name"]
+    ]
     if len(wrong_pool) < choices_count - 1:
         wrong_pool = [country for country in COUNTRIES if country["name"] != correct["name"]]
     return random.sample(wrong_pool, min(choices_count - 1, len(wrong_pool)))
+
+
+def without_excluded(countries: list[dict[str, Any]], excluded_names: set[str] | None) -> list[dict[str, Any]]:
+    if not excluded_names:
+        return countries
+    filtered = [country for country in countries if country["name"] not in excluded_names]
+    return filtered or countries
 
 
 def daily_country_set(day: date | None = None) -> list[dict[str, Any]]:

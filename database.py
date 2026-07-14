@@ -273,6 +273,29 @@ def get_question_session(question_id: str, telegram_id: int):
         res["choices"] = json.loads(res["choices_json"])
         return res
 
+def get_recent_question_countries(
+    telegram_id: int,
+    category: str,
+    difficulty: str,
+    limit: int = 10,
+):
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT correct_country
+            FROM tma_question_sessions
+            WHERE telegram_id = ?
+              AND mode = 'grid'
+              AND category = ?
+              AND difficulty = ?
+              AND correct_country IS NOT NULL
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (telegram_id, category, difficulty, limit),
+        ).fetchall()
+        return [row["correct_country"] for row in rows if row["correct_country"]]
+
 def mark_question_answered(question_id: str, telegram_id: int):
     with get_db_connection() as conn:
         conn.execute(
